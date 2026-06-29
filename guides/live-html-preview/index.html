@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Live HTML Preview: Edit HTML, CSS and JavaScript Online</title>
+  <meta name="description" content="Learn how live HTML preview renders HTML, CSS and JavaScript, how to debug common issues and how to test responsive layouts accurately.">
+  <meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large">
+  <link rel="canonical" href="https://instantviewer.online/guides/live-html-preview/">
+  <meta property="og:type" content="article"><meta property="og:title" content="Live HTML Preview Guide"><meta property="og:description" content="A practical workflow for editing and debugging HTML, CSS and JavaScript in a browser preview."><meta property="og:url" content="https://instantviewer.online/guides/live-html-preview/"><meta property="og:image" content="https://instantviewer.online/og-image.png"><meta property="article:modified_time" content="2026-06-21">
+  <link rel="stylesheet" href="/seo-pages.min.css?v=2595f8da5a1f"><link rel="icon" href="/favicon.ico">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","@id":"https://instantviewer.online/guides/live-html-preview/#article","headline":"Live HTML Preview: Edit HTML, CSS and JavaScript Online","description":"A practical guide to browser-based live preview and responsive testing.","url":"https://instantviewer.online/guides/live-html-preview/","datePublished":"2026-06-21","dateModified":"2026-06-21","inLanguage":"en","author":{"@id":"https://instantviewer.online/#publisher"},"publisher":{"@id":"https://instantviewer.online/#publisher"},"mainEntityOfPage":{"@id":"https://instantviewer.online/guides/live-html-preview/#page"},"image":"https://instantviewer.online/og-image.png"}</script>
+</head>
+<body>
+  <header class="site-header"><nav class="nav" aria-label="Main navigation"><a class="brand" href="/">HTML Viewer</a><div class="nav-links"><a href="/guides/">Guides</a><a href="/about/">About</a><a class="button" href="/">Try live preview</a></div></nav></header>
+  <main>
+    <div class="breadcrumbs"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Live HTML preview</div>
+    <section class="hero"><p class="eyebrow">Guide · Updated June 21, 2026</p><h1>How live HTML preview works—and how to debug it without guessing</h1><p class="lede">A live preview turns source code into a browser document every time the editor changes. The useful part is not merely seeing the result: it is understanding which document is being rendered, which resources it can reach and what the browser reports when something fails.</p><div class="actions"><a class="button" href="/">Open the editor</a><a class="button secondary" href="#quick-answer">Read the short answer</a></div></section>
+    <article class="prose">
+      <h2 id="quick-answer">What is a live HTML preview?</h2>
+      <blockquote>A live HTML preview is a browser-rendered document that refreshes as its HTML, CSS or JavaScript source changes. In a single-file editor, the preview can be generated directly from one complete HTML string, which makes feedback nearly immediate. In a multi-file project, the preview also needs an entry document, a virtual or real base URL and resolvable paths for stylesheets, scripts, images and fonts. The preview uses the browser’s normal parsing, layout and JavaScript engines, so valid web-platform behavior still applies. It is excellent for prototyping, learning and reproducing front-end bugs, but it is not automatically identical to production: server routes, build tools, environment variables, HTTP headers and backend APIs may be absent. A reliable workflow therefore combines fast visual feedback with console inspection, explicit file paths and a final test on the intended hosting environment.</blockquote>
+      <h2>Start with a complete document</h2>
+      <p>A browser can repair incomplete markup, but relying on that repair makes debugging harder. Begin with a doctype, a language, character encoding, viewport metadata, a title and a body. The <a href="https://html.spec.whatwg.org/" rel="external">WHATWG HTML Living Standard</a> defines the document model, while <a href="https://developer.mozilla.org/en-US/docs/Web/HTML" rel="external">MDN’s HTML reference</a> offers practical explanations and compatibility notes.</p>
+      <pre><code>&lt;!doctype html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;
+  &lt;title&gt;Preview test&lt;/title&gt;
+  &lt;style&gt;body { font-family: system-ui; padding: 2rem; }&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1&gt;Hello preview&lt;/h1&gt;
+  &lt;script&gt;console.log('Preview ready');&lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+      <h2>Choose the right editing mode</h2>
+      <p>Use Simple mode when the work fits naturally in one document: a component demo, a CSS experiment, a teaching example or a bug reproduction. Inline styles and scripts remove path resolution from the equation, so the visual response can be as direct as possible.</p>
+      <p>Use Files mode when the folder structure is part of the behavior. A stylesheet linked with `<code>&lt;link rel="stylesheet" href="styles.css"&gt;</code>` and a script loaded with `<code>&lt;script src="script.js"&gt;&lt;/script&gt;</code>` require the preview to know where `styles.css` and `script.js` live relative to the active HTML file. The <a href="/guides/multi-file-html-editor/">multi-file guide</a> explains that resolution model.</p>
+      <h2>A debugging sequence that saves time</h2>
+      <ol class="steps">
+        <li><strong>Check the entry document.</strong> Confirm that the preview is rendering the HTML file you think it is rendering.</li>
+        <li><strong>Reduce to visible HTML.</strong> Add a plain heading. If it does not appear, the problem is earlier than CSS or JavaScript.</li>
+        <li><strong>Check relative paths and filename case.</strong> Hosting systems may distinguish `Logo.png` from `logo.png` even if a local operating system does not.</li>
+        <li><strong>Inspect the console.</strong> Syntax errors, blocked resources and missing files usually provide a precise URL and line number.</li>
+        <li><strong>Test the exported result.</strong> Open the downloaded HTML or serve the folder over HTTP before treating the preview as production proof.</li>
+      </ol>
+      <h2>Responsive preview is a viewport test, not a device laboratory</h2>
+      <p>Changing the preview width is useful for media queries, fluid layout, overflow and component wrapping. It does not emulate every mobile property: the CPU, memory, touch input, browser chrome, safe areas and network conditions remain those of the current device. Use the responsive sizes for fast layout checks, then verify important flows on a real phone or with browser device emulation.</p>
+      <p>Include a viewport meta tag or mobile widths can behave like a scaled desktop canvas. Prefer layouts that respond to available space instead of targeting a catalogue of device models. CSS media queries are documented in the <a href="https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_media_queries/Using_media_queries" rel="external">MDN media query guide</a>.</p>
+      <h2>Security and preview boundaries</h2>
+      <p>JavaScript in a preview can run code with the permissions granted to its frame. A sandbox can reduce some capabilities, but more restrictive policies may also break legitimate examples, downloads, forms or multi-file navigation. Do not paste untrusted code into a permissive environment. For sensitive testing, use an isolated browser profile or a disposable environment.</p>
+      <h2>When a live preview is the wrong tool</h2>
+      <p>A static preview is not a replacement for a Node.js build, a server-side framework, a database or an API. Imports that depend on package resolution, framework compilation, secret environment variables or server routes need their actual runtime. The preview remains useful for the generated HTML/CSS/JS layer, but the final verification belongs in the target stack.</p>
+      <h2>Common mistakes to rule out first</h2>
+      <p>Do not debug a complex animation before confirming that the expected HTML entry is active. Do not add `!important` repeatedly when the stylesheet itself may be missing. Avoid testing a module only through `file://`, because origin restrictions can create errors that disappear over HTTP. Finally, remember that a blank preview is not evidence of a slow renderer: malformed markup, a full-page overlay, white text on a white background or an early JavaScript exception can all produce the same visual symptom.</p>
+      <p class="note"><strong>Next:</strong> learn how an entry file and relative URLs work in the <a href="/guides/multi-file-html-editor/">multi-file HTML editor guide</a>.</p>
+    </article>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><span>HTML Viewer Guides · Updated June 2026</span><div class="footer-links"><a href="/guides/">All guides</a><a href="/legal/privacy/">Privacy</a><a href="/about/">About</a></div></div></footer>
+</body>
+</html>

@@ -1,0 +1,35 @@
+# Local editor and OS noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
+# Local agent/session scratch data
+.agents/
+.codex/
+.claude/settings.local.json
+
+# Logs and temporary runtime output
+*.log
+logs/
+tmp/
+temp/
+tmp-*
+.cache/
+.seo-cache/
+
+# SEO audit output (generated, not served)
+seo-audit-output/
+
+# Dependency/build folders if the app grows a toolchain later
+node_modules/
+dist/
+build/
+coverage/
+
+# Environment files
+.env
+.env.*
+!.env.example

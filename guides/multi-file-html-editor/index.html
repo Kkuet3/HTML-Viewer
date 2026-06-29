@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Multi-File HTML Editor: CSS, JavaScript, Images and Paths</title>
+  <meta name="description" content="Learn how multi-file HTML projects resolve entry pages, CSS, JavaScript, images, folders and relative URLs in a browser-based editor.">
+  <meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large">
+  <link rel="canonical" href="https://instantviewer.online/guides/multi-file-html-editor/">
+  <meta property="og:type" content="article"><meta property="og:title" content="Multi-File HTML Editor Guide"><meta property="og:description" content="Understand entry pages, folder structure, relative paths and local assets."><meta property="og:url" content="https://instantviewer.online/guides/multi-file-html-editor/"><meta property="og:image" content="https://instantviewer.online/og-image.png"><meta property="article:modified_time" content="2026-06-21">
+  <link rel="stylesheet" href="/seo-pages.min.css?v=2595f8da5a1f"><link rel="icon" href="/favicon.ico">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","@id":"https://instantviewer.online/guides/multi-file-html-editor/#article","headline":"Multi-File HTML Editor: CSS, JavaScript, Images and Paths","description":"A practical guide to static project structure and relative URL resolution.","url":"https://instantviewer.online/guides/multi-file-html-editor/","datePublished":"2026-06-21","dateModified":"2026-06-21","inLanguage":"en","author":{"@id":"https://instantviewer.online/#publisher"},"publisher":{"@id":"https://instantviewer.online/#publisher"},"image":"https://instantviewer.online/og-image.png"}</script>
+</head>
+<body>
+  <header class="site-header"><nav class="nav" aria-label="Main navigation"><a class="brand" href="/">HTML Viewer</a><div class="nav-links"><a href="/guides/">Guides</a><a href="/about/">About</a><a class="button" href="/">Open Files mode</a></div></nav></header>
+  <main>
+    <div class="breadcrumbs"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Multi-file projects</div>
+    <section class="hero"><p class="eyebrow">Guide · Updated June 21, 2026</p><h1>Multi-file HTML projects: entry pages, relative paths and local assets</h1><p class="lede">Separating HTML, CSS, JavaScript and images makes a project easier to maintain, but it introduces one rule that explains most preview bugs: every relative URL is resolved from a specific file location.</p><div class="actions"><a class="button" href="/">Open the editor</a><a class="button secondary" href="#quick-answer">Read the short answer</a></div></section>
+    <article class="prose">
+      <h2 id="quick-answer">What is a multi-file HTML editor?</h2>
+      <blockquote>A multi-file HTML editor preserves a project as separate documents and assets instead of combining everything into one HTML string. One HTML file acts as the preview entry point—usually `index.html`—and its relative URLs connect stylesheets, scripts, images, fonts and other pages. The editor needs a file tree, a way to identify the active entry page and a browser-accessible URL for each project resource. Moving or renaming a file can change the correct relative path, so a reliable editor updates references or clearly reports missing files. This model is closer to a static website served from a folder than a single-snippet playground, but it still has boundaries: server rewrites, package imports, backend routes and build-time transformations are not created automatically. Use it when the folder structure is meaningful, then test the exported project on the host that will actually serve it.</blockquote>
+      <h2>A predictable project structure</h2>
+      <pre><code>project/
+├── index.html
+├── css/
+│   └── styles.css
+├── js/
+│   └── app.js
+└── images/
+    └── logo.webp</code></pre>
+      <p>From `index.html`, the correct references are `css/styles.css`, `js/app.js` and `images/logo.webp`. From `css/styles.css`, a background image in the images folder is reached with `../images/logo.webp` because the stylesheet lives one directory deeper. The URL resolution algorithm follows the document or stylesheet URL, not the visual position of a file in an editor sidebar.</p>
+      <h2>Choose and protect the entry HTML</h2>
+      <p>Static hosts conventionally serve `index.html` for a folder, so it is a sensible automatic default. A project may still contain demonstrations, documentation or nested pages. Selecting the preview entry explicitly prevents the editor from switching to the last HTML file merely because it was clicked. When an entry is renamed or deleted, the preview should either update the selection or present a clear missing-entry state.</p>
+      <h2>Relative, root-relative and absolute URLs</h2>
+      <ul>
+        <li><strong>Relative:</strong> `images/photo.jpg` starts from the current document directory.</li>
+        <li><strong>Parent-relative:</strong> `../images/photo.jpg` moves up one directory first.</li>
+        <li><strong>Root-relative:</strong> `/images/photo.jpg` starts from the web origin root, which may differ from the virtual project root.</li>
+        <li><strong>Absolute:</strong> `https://example.com/photo.jpg` requests another complete URL and requires a network connection.</li>
+      </ul>
+      <p>The <a href="https://developer.mozilla.org/en-US/docs/Learn_web_development/Howto/Web_mechanics/What_is_a_URL" rel="external">MDN guide to URLs</a> explains the components and resolution model. Prefer relative URLs for portable static projects that may be moved between folders or hosts.</p>
+      <h2>Images, fonts and binary files</h2>
+      <p>Text files can be edited directly. Binary assets should stay as byte data or browser blobs; interpreting them as text corrupts the file. A preview can expose a temporary URL for the asset, while an export writes the original bytes back into the ZIP or embeds them as data URLs in a single-file build.</p>
+      <p>Use descriptive filenames, correct extensions and consistent case. Add width and height to content images when dimensions are known so the browser can reserve space and reduce layout shift. Use `alt=""` for decorative images and meaningful alternative text for images that communicate information.</p>
+      <h2>Renaming and moving files safely</h2>
+      <ol class="steps">
+        <li>Identify references in HTML attributes such as `src`, `href`, `poster` and `srcset`.</li>
+        <li>Inspect CSS `url(...)` and `@import` references.</li>
+        <li>Calculate the new path from each referring file, not from the project root alone.</li>
+        <li>Refresh the preview URL or invalidate its asset cache.</li>
+        <li>Verify navigation, images, fonts and scripts before exporting.</li>
+      </ol>
+      <h2>Why a local folder may behave differently</h2>
+      <p>Opening `file://` URLs bypasses a normal HTTP origin and triggers browser restrictions around modules, fetch requests, service workers and cross-origin access. A project preview served through a local or virtual HTTP URL behaves more like a static host. For final testing, use a small local server or the actual deployment preview instead of relying only on double-clicking `index.html`.</p>
+      <h2>What the editor does not manufacture</h2>
+      <p>A folder containing React, Vue, TypeScript or Sass source usually needs a build step. Bare package names such as `import React from 'react'` are resolved by tooling, not by a plain browser folder. A multi-file static editor works best with browser-ready HTML, CSS, JavaScript and assets. If a framework has already produced a static `dist` directory, that output can often be previewed as a normal project.</p>
+      <h2>Common path mistakes</h2>
+      <p>A leading slash can accidentally point to the editor's host root instead of the imported project root. A stylesheet can resolve images from its own folder while a developer expects paths to start from `index.html`. URL-encoded spaces, query strings and fragments can hide the true filename during a quick visual check. Renaming only the visible file label without updating references creates another subtle failure. When in doubt, copy the failing URL from the browser console, compare every path segment with the file tree and calculate the relative path from the file that contains the reference.</p>
+      <p class="note"><strong>Next:</strong> prepare a portable archive with the <a href="/guides/import-export-html-projects/">ZIP import and export guide</a>.</p>
+    </article>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><span>HTML Viewer Guides · Updated June 2026</span><div class="footer-links"><a href="/guides/">All guides</a><a href="/legal/privacy/">Privacy</a><a href="/about/">About</a></div></div></footer>
+</body>
+</html>

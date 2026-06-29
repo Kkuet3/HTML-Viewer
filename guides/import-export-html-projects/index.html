@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Import and Export HTML Projects as ZIP or Single HTML</title>
+  <meta name="description" content="Learn how to prepare, import, validate and export static HTML projects as ZIP folders or portable single-file HTML documents.">
+  <meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large">
+  <link rel="canonical" href="https://instantviewer.online/guides/import-export-html-projects/">
+  <meta property="og:type" content="article"><meta property="og:title" content="Import and Export HTML Projects"><meta property="og:description" content="A reliable ZIP and single-HTML workflow for static web projects."><meta property="og:url" content="https://instantviewer.online/guides/import-export-html-projects/"><meta property="og:image" content="https://instantviewer.online/og-image.png"><meta property="article:modified_time" content="2026-06-21">
+  <link rel="stylesheet" href="/seo-pages.min.css?v=2595f8da5a1f"><link rel="icon" href="/favicon.ico">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","@id":"https://instantviewer.online/guides/import-export-html-projects/#article","headline":"Import and Export HTML Projects as ZIP or Single HTML","description":"A guide to portable static project archives and unified HTML exports.","url":"https://instantviewer.online/guides/import-export-html-projects/","datePublished":"2026-06-21","dateModified":"2026-06-21","inLanguage":"en","author":{"@id":"https://instantviewer.online/#publisher"},"publisher":{"@id":"https://instantviewer.online/#publisher"},"image":"https://instantviewer.online/og-image.png"}</script>
+</head>
+<body>
+  <header class="site-header"><nav class="nav" aria-label="Main navigation"><a class="brand" href="/">HTML Viewer</a><div class="nav-links"><a href="/guides/">Guides</a><a href="/about/">About</a><a class="button" href="/">Import a project</a></div></nav></header>
+  <main>
+    <div class="breadcrumbs"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Import and export</div>
+    <section class="hero"><p class="eyebrow">Guide · Updated June 21, 2026</p><h1>Import and export HTML projects without breaking paths or assets</h1><p class="lede">A ZIP archive is a convenient container, not a guarantee that a website is portable. The project still needs a clear root, a previewable HTML entry and references that remain valid after extraction.</p><div class="actions"><a class="button" href="/">Open the editor</a><a class="button secondary" href="#quick-answer">Read the short answer</a></div></section>
+    <article class="prose">
+      <h2 id="quick-answer">What should an importable HTML ZIP contain?</h2>
+      <blockquote>An importable HTML ZIP should contain browser-ready static files with one clear entry page, normally `index.html`, plus any linked CSS, JavaScript, images, fonts and nested pages. The useful project root is the folder that directly contains that entry page; wrapping it in several unnecessary parent directories makes paths and exported names harder to predict. Relative references should match the archive’s case-sensitive filenames and must not depend on paths outside the ZIP. After import, verify the entry page, console, images, fonts, navigation and responsive layout before editing. When exporting, choose ZIP to preserve the folder structure, a local folder when the browser supports direct directory writing, or unified HTML when a self-contained document is more important than maintainable source separation. Always open the downloaded result again—the successful creation of an archive does not prove that every runtime reference survived.</blockquote>
+      <h2>Prepare the archive</h2>
+      <ol class="steps">
+        <li><strong>Find the real root.</strong> The folder containing `index.html` should usually be the top-level project folder in the ZIP.</li>
+        <li><strong>Remove generated clutter.</strong> Exclude operating-system files, caches and dependencies that a static browser project does not use.</li>
+        <li><strong>Keep browser-ready output.</strong> Compile TypeScript, Sass or framework source before importing if the project requires a build.</li>
+        <li><strong>Check filename case.</strong> Match every linked path exactly.</li>
+        <li><strong>Keep references inside the archive.</strong> A path like `../../shared/logo.png` cannot work if the shared folder is not included.</li>
+      </ol>
+      <h2>Import HTML versus import ZIP</h2>
+      <p>A standalone `.html` file is appropriate for Simple mode or for a document whose CSS and JavaScript are inline. A ZIP is appropriate when separate files and folders matter. Dragging multiple loose files can also form a project, but a ZIP preserves their hierarchy more reliably.</p>
+      <p>ZIP processing happens locally in the browser after the ZIP library is available. Large archives consume memory while they are expanded, so remove unrelated binaries and avoid treating the editor as an unlimited storage system.</p>
+      <h2>Validate before changing anything</h2>
+      <p>Open the selected entry page immediately after import. If the layout is unstyled, inspect the CSS URL. If buttons do nothing, inspect script URLs and console errors. If images fail, compare the archive filename, extension and case with the HTML or CSS reference. Establishing a clean baseline prevents an import problem from being mistaken for a later editing mistake.</p>
+      <h2>Choose the right export</h2>
+      <div class="grid">
+        <section class="card"><h3>ZIP archive</h3><p>Best for preserving separate source files, folders and original binary assets. Choose it when the project will be edited again or deployed as a static folder.</p></section>
+        <section class="card"><h3>Local folder</h3><p>Best when the browser supports the File System Access API and you want to write files directly to a chosen directory.</p></section>
+        <section class="card"><h3>Unified HTML</h3><p>Best for a portable demo, email attachment or single-file handoff. Styles, scripts and assets may be embedded, which increases file size.</p></section>
+      </div>
+      <h2>How unified HTML changes a project</h2>
+      <p>A unified export can inline stylesheet text, JavaScript and local assets. That improves portability but removes the original separation of concerns. Large images represented as data URLs increase the HTML size, source maps may no longer be useful, module behavior can change and code that calculates URLs at runtime may need special handling.</p>
+      <p>Use unified HTML as a delivery format, not automatically as the source of truth. Keep a ZIP or folder copy if the project will continue to evolve.</p>
+      <h2>Browser support for direct folder export</h2>
+      <p>Direct directory writing depends on the <a href="https://developer.mozilla.org/en-US/docs/Web/API/File_System_API" rel="external">File System API</a> and browser implementation. It typically requires a secure context and a user gesture. When unavailable, ZIP remains the most interoperable option because the browser only needs to create a downloadable file.</p>
+      <h2>Post-export checklist</h2>
+      <ul>
+        <li>Extract the ZIP into a new empty directory.</li>
+        <li>Serve it over local HTTP when modules, fetch or service workers are involved.</li>
+        <li>Open the entry page and inspect the console and network panel.</li>
+        <li>Follow internal links and test image, font, video and download assets.</li>
+        <li>Check at least one narrow and one wide viewport.</li>
+        <li>Compare the exported preview with the editor preview before deployment.</li>
+      </ul>
+      <h2>Common archive mistakes</h2>
+      <p>A ZIP may contain a project folder inside another project folder, causing the expected entry page to sit one level deeper than anticipated. Some archive tools also include hidden operating-system metadata. Password-protected archives, symbolic links and unsupported compression features are poor choices for a browser importer. Keep the archive ordinary: one meaningful root, browser-ready files, no password and no dependencies that live outside the ZIP. If the extracted project works but the unified HTML does not, inspect runtime-generated URLs and module scripts before assuming the original files were lost.</p>
+      <p class="note"><strong>Related:</strong> review <a href="/guides/multi-file-html-editor/">relative paths and entry pages</a> before restructuring an imported project.</p>
+    </article>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><span>HTML Viewer Guides · Updated June 2026</span><div class="footer-links"><a href="/guides/">All guides</a><a href="/legal/privacy/">Privacy</a><a href="/about/">About</a></div></div></footer>
+</body>
+</html>
