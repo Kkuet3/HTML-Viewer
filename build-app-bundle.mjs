@@ -1,4 +1,8 @@
 import { readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+
+const jszipHash = createHash('sha256').update(await readFile('jszip.min.js')).digest('hex').slice(0, 12);
+const workerHash = createHash('sha256').update(await readFile('preview-sw.js')).digest('hex').slice(0, 12);
 
 const sourceFiles = [
   'src/app/00-config-state.js',
@@ -12,14 +16,24 @@ const sourceFiles = [
   'src/app/08-layout-preview-controls.js',
   'src/app/09-import-export-theme.js',
   'src/app/10-editor-mode-assets.js',
-  'src/app/11-explorer-tabs.min.js',
+  'src/app/11-explorer-tabs.js',
   'src/app/12-mobile-init.js',
   'src/app/13-about-panel.js',
-  'src/app/14-cookies-legal.js',
+  'src/app/15-preview-diagnostics.js',
+  'src/app/16-editor-recovery.js',
 ];
 
 const sections = await Promise.all(sourceFiles.map(async (file) => {
-  const source = await readFile(file, 'utf8');
+  let source = await readFile(file, 'utf8');
+  if (file.endsWith('/00-config-state.js')) {
+    source = source.replace(/const PROJECT_PREVIEW_SW_VERSION = '[^']+';/, `const PROJECT_PREVIEW_SW_VERSION = '${workerHash}';`);
+  }
+  if (file.endsWith('/09-import-export-theme.js')) {
+    // Lazy-loaded libraries also need a versioned URL after deployment.
+    const assignment = "script.src = new URL('jszip.min.js', APP_ROOT_URL).href;";
+    if (!source.includes(assignment)) throw new Error('JSZip runtime URL assignment was changed; update its build fingerprint.');
+    source = source.replace(assignment, `script.src = new URL('jszip.min.js?v=${jszipHash}', APP_ROOT_URL).href;`);
+  }
   return `\n/* ---- ${file} ---- */\n${source.trim()}\n;`;
 }));
 

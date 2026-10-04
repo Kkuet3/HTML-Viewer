@@ -1,6 +1,14 @@
 // Switch editor mode (unified <-> split)
-async function switchEditorMode(newMode, migrate = true) {
+async function switchEditorMode(newMode, migrate = true, { render = true } = {}) {
   if (editorMode === newMode) return;
+  if (!isRestoringHistory) window.cancelPendingRecovery?.();
+  // Invalidate delayed work from the previous renderer before changing any
+  // models or virtual files. A late Files render must never replace Simple,
+  // and vice versa.
+  invalidatePreviewLifecycle('mode-change');
+  previewLifecycle.sessionGeneration += 1;
+  resetProjectPreviewLocation();
+  markProjectPreviewDirty(null, { all: true });
   if (!isRestoringHistory) {
     saveHistoryState();
   }
@@ -55,7 +63,7 @@ async function switchEditorMode(newMode, migrate = true) {
     try {
       if (oldMode === 'unified' && editorMode === 'split') {
         // Migrate Unified -> Split
-        const unifiedVal = monacoLoaded ? unifiedModel.getValue() : fallbackTextarea.value;
+        const unifiedVal = getCurrentEditorDocumentText();
         if (cameFromSplitMode) {
           const entryFile = getEntryFile();
           if (entryFile) {
@@ -71,6 +79,7 @@ async function switchEditorMode(newMode, migrate = true) {
             } else {
               entryFile.content = unifiedVal;
               entryFile.size = new Blob([unifiedVal]).size;
+              fallbackLastKnownValue = unifiedVal;
               markProjectPreviewDirty(entryFile.name);
             }
             openFile(entryFile.id);
@@ -98,6 +107,7 @@ async function switchEditorMode(newMode, migrate = true) {
           editor.setModel(unifiedModel);
         } else {
           fallbackTextarea.value = unifiedVal;
+          fallbackLastKnownValue = unifiedVal;
         }
 
         if (entryFile && filenameInput) {
@@ -119,8 +129,7 @@ async function switchEditorMode(newMode, migrate = true) {
 
   // Re-layout and render
   updateEditorPlaceholder();
-  allowPreviewFocusOnNextRender();
-  updatePreview();
+  if (render) updatePreview();
   if (monacoLoaded && editor) {
     if (window.innerWidth > COMPACT_LAYOUT_MAX_WIDTH) {
       editor.focus();
@@ -152,6 +161,7 @@ function saveFallbackTabContent(fileId = activeFileId) {
     if (file.content !== nextContent) {
       file.content = nextContent;
       file.size = new Blob([file.content]).size;
+      fallbackLastKnownValue = nextContent;
       markProjectPreviewDirty(file.name);
     }
   }
@@ -377,11 +387,26 @@ function showAssetPreview(file) {
 }
 
 async function copyToClipboard(text, successMessage) {
+  let fallbackTextarea = null;
   try {
-    await navigator.clipboard.writeText(text);
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      fallbackTextarea = document.createElement('textarea');
+      fallbackTextarea.value = text;
+      fallbackTextarea.setAttribute('readonly', '');
+      fallbackTextarea.style.position = 'fixed';
+      fallbackTextarea.style.opacity = '0';
+      document.body.appendChild(fallbackTextarea);
+      fallbackTextarea.select();
+      const copied = document.execCommand('copy');
+      if (!copied) throw new Error('Clipboard unavailable');
+    }
     showToast(successMessage);
   } catch {
     showToast(t('toast_clipboard_error'), 'error');
+  } finally {
+    fallbackTextarea?.remove();
   }
 }
 
@@ -443,6 +468,7 @@ function openFile(fileId, { autoCollapse = true } = {}) {
       editor.setModel(model);
     } else {
       fallbackTextarea.value = file.content || '';
+      fallbackLastKnownValue = fallbackTextarea.value;
     }
   } else {
     showAssetPreview(file);
@@ -450,6 +476,7 @@ function openFile(fileId, { autoCollapse = true } = {}) {
       editor.setModel(null);
     } else {
       fallbackTextarea.value = '';
+      fallbackLastKnownValue = '';
     }
   }
 
@@ -496,6 +523,7 @@ function closeFile(fileId, event) {
         editor.setModel(null);
       } else {
         fallbackTextarea.value = '';
+        fallbackLastKnownValue = '';
       }
     }
   }

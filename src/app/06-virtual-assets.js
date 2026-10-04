@@ -4,6 +4,16 @@ const virtualBlobUrls = {};
 // Structure: file.name -> { url, rawContent, resolvedContent, sourceBlob }
 const blobUrlCache = {};
 
+function createProjectFileLookup() {
+  const lookup = new Map();
+  files.forEach(file => {
+    if (!file.isFolder) {
+      lookup.set(normalizeProjectPath(file.name).toLowerCase(), file);
+    }
+  });
+  return lookup;
+}
+
 function cleanupVirtualBlobUrlCache() {
   const activeFileNames = new Set(files.filter(f => !f.isFolder).map(f => f.name));
 
@@ -21,8 +31,9 @@ function cleanupVirtualBlobUrlCache() {
   }
 }
 
-function findFileByCanonicalPath(canonicalPath) {
+function findFileByCanonicalPath(canonicalPath, fileLookup = null) {
   const lookupPath = normalizeProjectPath(canonicalPath).toLowerCase();
+  if (fileLookup) return fileLookup.get(lookupPath) || null;
   return files.find(item => !item.isFolder && item.name.toLowerCase() === lookupPath) || null;
 }
 
@@ -30,63 +41,25 @@ function resolveReferenceValueLazy(refPath, hostFilename, resolver) {
   const { suffix } = splitPathSuffix(refPath);
   for (const candidatePath of getReferencePathCandidates(hostFilename, refPath)) {
     const resolved = resolver(candidatePath);
-    if (resolved) return `${resolved}${suffix}`;
+    if (resolved) return appendReferenceSuffix(resolved, suffix);
   }
   return null;
 }
 
 function resolveSrcsetLazy(value, hostFilename, resolver) {
-  return value.split(',').map(part => {
-    const trimmed = part.trim();
-    if (!trimmed) return part;
-    const pieces = trimmed.split(/\s+/);
-    const resolved = resolveReferenceValueLazy(pieces[0], hostFilename, resolver);
-    if (!resolved) return part;
-    pieces[0] = resolved;
-    return pieces.join(' ');
-  }).join(', ');
+  return resolveSrcsetWithTransform(value, refPath => resolveReferenceValueLazy(refPath, hostFilename, resolver));
 }
 
 function resolveCssUrlsLazy(content, hostFilename, resolver) {
-  let result = content.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, quote, refPath) => {
-    const resolved = resolveReferenceValueLazy(refPath.trim(), hostFilename, resolver);
-    if (!resolved) return match;
-    const safeQuote = quote || '"';
-    return `url(${safeQuote}${resolved}${safeQuote})`;
-  });
-
-  result = result.replace(/@import\s+(?:url\(\s*)?(['"]?)([^'")\s]+)\1\s*\)?/gi, (match, quote, refPath) => {
-    const resolved = resolveReferenceValueLazy(refPath.trim(), hostFilename, resolver);
-    if (!resolved) return match;
-    return rewriteCssImportReference(match, quote, refPath, resolved);
-  });
-
-  return result;
+  return rewriteCssReferences(content, refPath => resolveReferenceValueLazy(refPath, hostFilename, resolver));
 }
 
 function resolveVirtualPathsLazy(content, entryFilename, resolver) {
-  let result = content.replace(/\b(href|src|action|poster)\s*=\s*(['"])([^'"]+)\2/gi, (match, attr, quote, refPath) => {
-    const resolved = resolveReferenceValueLazy(refPath, entryFilename, resolver);
-    if (resolved) {
-      return `${attr}=${quote}${resolved}${quote}`;
-    }
-    return match;
-  });
-
-  result = result.replace(/\bsrcset\s*=\s*(['"])([^'"]+)\1/gi, (match, quote, value) => {
-    return `srcset=${quote}${resolveSrcsetLazy(value, entryFilename, resolver)}${quote}`;
-  });
-
-  result = result.replace(/\bstyle\s*=\s*(['"])([\s\S]*?)\1/gi, (match, quote, styleContent) => {
-    return `style=${quote}${resolveCssUrlsLazy(styleContent, entryFilename, resolver)}${quote}`;
-  });
-
-  return result.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (match, cssContent) => {
-    return match.replace(cssContent, resolveCssUrlsLazy(cssContent, entryFilename, resolver));
-  });
+  const transform = refPath => resolveReferenceValueLazy(refPath, entryFilename, resolver);
+  return rewriteHtmlReferenceAttributes(content, transform);
 }
 
-function ensureVirtualBlobUrl(file, resolving = new Set()) {
+function ensureVirtualBlobUrl(file, resolving = new Set(), fileLookup = null) {
   if (!file || file.isFolder) return null;
 
   const cached = blobUrlCache[file.name];
@@ -122,8 +95,8 @@ function ensureVirtualBlobUrl(file, resolving = new Set()) {
 
   resolving.add(file.name);
   const resolver = (canonicalPath) => {
-    const referencedFile = findFileByCanonicalPath(canonicalPath);
-    return ensureVirtualBlobUrl(referencedFile, resolving);
+    const referencedFile = findFileByCanonicalPath(canonicalPath, fileLookup);
+    return ensureVirtualBlobUrl(referencedFile, resolving, fileLookup);
   };
 
   let resolvedContent = rawContent;
@@ -307,30 +280,48 @@ function createFullPagePreviewSnapshot() {
   return { code, urlsToRevoke };
 }
 
-async function createVirtualFileDataUrlSnapshot() {
+function captureExportRevision() {
+  return {
+    projectIdentity,
+    entryId: getEntryFile()?.id || '',
+    files: files.map(file => ({
+      ...file,
+      content: file.isBinary ? '' : getFileText(file),
+      blob: file.blob
+    }))
+  };
+}
+
+function getRevisionFileBlob(file, contentOverride = null) {
+  if (file.isBinary && file.blob) return file.blob;
+  const content = contentOverride !== null ? contentOverride : file.content || '';
+  return new Blob([content], { type: `${file.mimeType || getMimeTypeForFilename(file.name)};charset=utf-8` });
+}
+
+async function createVirtualFileDataUrlSnapshot(sourceFiles = files) {
   const dataUrlMap = {};
 
-  for (const file of files) {
+  for (const file of sourceFiles) {
     if (file.isFolder) continue;
     try {
-      dataUrlMap[file.name] = await blobToDataUrl(getFileBlob(file));
+      dataUrlMap[file.name] = await blobToDataUrl(getRevisionFileBlob(file));
     } catch {
       // Leave references untouched if a browser refuses to encode a file.
     }
   }
 
-  for (const file of files) {
+  for (const file of sourceFiles) {
     if (file.isFolder || file.isBinary) continue;
     const ext = getFileExtension(file.name);
     if (ext !== 'html' && ext !== 'htm' && ext !== 'css') continue;
 
-    const rawContent = getFileText(file);
+    const rawContent = file.content || '';
     const resolvedContent = ext === 'css'
       ? resolveCssUrls(rawContent, dataUrlMap, file.name)
       : resolveVirtualPaths(rawContent, dataUrlMap, file.name);
 
     try {
-      dataUrlMap[file.name] = await blobToDataUrl(getFileBlob(file, resolvedContent));
+      dataUrlMap[file.name] = await blobToDataUrl(getRevisionFileBlob(file, resolvedContent));
     } catch {
       // Keep the first-pass Data URL if the rewritten version cannot be encoded.
     }

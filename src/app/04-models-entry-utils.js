@@ -72,16 +72,28 @@ function normalizeProjectFiles() {
 function createModelForFile(file) {
   if (!monacoLoaded || !isEditableFile(file)) return null;
   const language = getLanguageFromFilename(file.name);
+  const fileId = file.id;
   const model = monaco.editor.createModel(file.content || '', language);
-  fileModels[file.id] = model;
+  fileModels[fileId] = model;
   model.onDidChangeContent(() => {
-    file.content = model.getValue();
-    file.size = new Blob([file.content]).size;
-    markProjectPreviewDirty(file.name);
-    updateEditorPlaceholder();
+    // History replaces file records with clones.  Resolve by id on every
+    // event so an old listener can never keep mutating a discarded object.
+    const currentFile = files.find(item => item.id === fileId);
+    if (!currentFile) return;
+    const previousContent = currentFile.content || '';
+    const nextContent = model.getValue();
     if (!isRestoringHistory) {
-      handleTextChange();
+      window.cancelPendingImportOperations?.();
+      handleTextChange({
+        contentOverrides: { [fileId]: previousContent },
+        unifiedContent: editorMode === 'unified' ? previousContent : undefined
+      });
     }
+    currentFile.content = nextContent;
+    currentFile.size = new Blob([nextContent]).size;
+    markProjectPreviewDirty(currentFile.name);
+    window.scheduleRecoverySave?.();
+    updateEditorPlaceholder();
     schedulePreviewUpdate({ force: false });
   });
   return model;
@@ -100,7 +112,11 @@ function disposeAllFileModels() {
 function syncModelsForFiles() {
   if (!monacoLoaded) return;
   files.forEach(file => {
-    if (isEditableFile(file) && openFileIds.includes(file.id) && !fileModels[file.id]) {
+    if (
+      isEditableFile(file) &&
+      (openFileIds.includes(file.id) || file.id === activeFileId) &&
+      !fileModels[file.id]
+    ) {
       createModelForFile(file);
     }
   });
@@ -341,12 +357,14 @@ function setSelectedEntryFile(fileId) {
     pendingHtmlOpenClick = null;
   }
   selectedEntryFileId = file.id;
-  projectPreviewCurrentPath = normalizeProjectPath(file.name);
+  resetProjectPreviewLocation();
+  previewLifecycle.projectPath = normalizeProjectPath(file.name);
   projectPreviewMissingPath = '';
+  projectPreviewNotifiedMissingPath = '';
   projectPreviewLastUrl = '';
   updateEntryHtmlSelector();
   renderFileExplorer();
-  updatePreview();
+  updatePreview({ full: false });
 }
 
 function handleExplorerFileClick(file) {

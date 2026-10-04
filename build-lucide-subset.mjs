@@ -25,7 +25,6 @@ const SCAN_FILES = [
   'src/app/11-explorer-tabs.js',
   'src/app/12-mobile-init.js',
   'src/app/13-about-panel.js',
-  'src/app/14-cookies-legal.js',
 ];
 
 // Icons returned dynamically by getIconForFilename() — not literal data-lucide

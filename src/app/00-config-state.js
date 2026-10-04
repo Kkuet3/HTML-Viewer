@@ -1,20 +1,44 @@
 // Modern HTML Online Viewer Application logic
-// Redesigned with artificialanalysis.ai data-dense aesthetics
 
 // Matches the CSS breakpoint where the fixed sidebar and both panel minima stop fitting.
 const COMPACT_LAYOUT_MAX_WIDTH = 1152;
 
-// --- Language & Translation System ---
-let currentLocale = 'en'; // default and crawler-facing language
-try {
-  const requestedLocale = new URLSearchParams(window.location.search).get('lang');
-  const browserLang = (navigator.language || navigator.languages?.[0] || '').toLowerCase();
-  if (requestedLocale === 'es' || (!requestedLocale && browserLang.startsWith('es'))) {
-    currentLocale = 'es';
+function readStoredValue(key, fallbackValue = null) {
+  try {
+    const value = window.localStorage?.getItem(key);
+    return value === null ? fallbackValue : value;
+  } catch {
+    return fallbackValue;
   }
-} catch (e) {
-  // Ignore, keep English
 }
+
+function writeStoredValue(key, value) {
+  try {
+    window.localStorage?.setItem(key, String(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getOrCreatePreviewSessionId() {
+  const storageKey = 'html-viewer-preview-session-id';
+  try {
+    const existing = window.sessionStorage?.getItem(storageKey) || '';
+    if (/^session-[a-z0-9-]+$/i.test(existing)) return existing;
+    const randomPart = window.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
+    const sessionId = `session-${Date.now().toString(36)}-${randomPart}`;
+    window.sessionStorage?.setItem(storageKey, sessionId);
+    return sessionId;
+  } catch {
+    return `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+// --- Language & Translation System ---
+// The generated HTML determines the editor language.
+// Language links navigate between the complete / and /es/ experiences.
+let currentLocale = document.documentElement.lang === 'es' ? 'es' : 'en';
 
 const TRANSLATIONS = {
   es: {
@@ -153,60 +177,8 @@ const TRANSLATIONS = {
     "default_folder_name": "proyecto",
     "default_file_name": "archivo",
     "imported_project_name": "proyecto-importado",
-    "sidebar_about": "Acerca de",
-    "about_title": "Acerca de HTML Viewer",
-    "about_what_title": "¿Qué es HTML Viewer?",
-    "about_what_desc": "HTML Viewer es un editor de código web gratuito que se ejecuta directamente en tu navegador. Escribe, edita y previsualiza HTML, CSS y JavaScript en tiempo real sin instalación ni registro. Ideal para desarrolladores web, estudiantes y diseñadores que necesitan prototipar rápidamente, probar fragmentos de código o aprender desarrollo web de forma interactiva.",
-    "about_features_title": "Características principales",
-    "about_feat_live": "Vista previa en tiempo real",
-    "about_feat_multi": "Editor multi-archivo",
-    "about_feat_responsive": "Test responsive",
-    "about_feat_export": "Importar / Exportar",
-    "about_feat_monaco": "Editor Monaco",
-    "about_feat_theme": "Tema oscuro y claro",
-    "about_feat_lang": "Bilingüe (ES/EN)",
-    "about_feat_offline": "Funciona sin conexión",
-    "about_faq_title": "Preguntas frecuentes",
-    "about_faq_q1": "¿Es gratis HTML Viewer?",
-    "about_faq_a1": "Sí, HTML Viewer es completamente gratuito. No hay planes de pago, registro ni anuncios. Todos los archivos se procesan localmente en tu navegador.",
-    "about_faq_q2": "¿Se guarda mi código en algún servidor?",
-    "about_faq_a2": "El código que escribes se procesa y guarda localmente en tu navegador. La analítica opcional y los recursos externos se explican por separado en las políticas de privacidad y cookies.",
-    "about_faq_q3": "¿Puedo usar HTML Viewer sin conexión a Internet?",
-    "about_faq_a3": "Sí. Una vez cargada la página, el editor funciona completamente offline. Puedes escribir, previsualizar y exportar tu código sin conexión.",
-    "about_faq_q4": "¿Qué navegadores son compatibles?",
-    "about_faq_a4": "HTML Viewer funciona en todos los navegadores modernos: Chrome, Firefox, Safari, Edge y Opera. Recomendamos Chrome o Edge para la mejor experiencia con el editor Monaco.",
-    "about_faq_q5": "¿Puedo trabajar con proyectos de múltiples archivos?",
-    "about_faq_a5": "Sí. Cambia al modo Archivos para crear proyectos con múltiples archivos HTML, CSS, JS e imágenes organizados en carpetas. Puedes importar y exportar proyectos como ZIP.",
-    "about_shortcuts_title": "Atajos de teclado",
-    "about_resources_title": "Guías y documentación",
-    "about_resources_desc": "Aprende a usar la vista previa, los proyectos multi-archivo y la importación o exportación ZIP.",
-    "about_sc_undo": "Deshacer",
-    "about_sc_redo": "Rehacer",
-    "about_sc_save": "Exportar archivo",
-    "about_sc_zoom": "Aumentar/Reducir zoom",
-    "about_sc_reset_zoom": "Restablecer zoom",
-    "about_footer": "Hecho con ❤ para la comunidad de desarrollo web.",
-    "legal_notice_title": "Información Legal",
-    "legal_aviso_short": "Aviso Legal",
-    "legal_privacidad_short": "Privacidad",
-    "legal_cookies_short": "Cookies",
-    "guides_short": "Guías",
-    "cookie_banner_title": "Control de Cookies",
-    "cookie_banner_desc": "Utilizamos cookies propias y de terceros para analizar el uso de nuestra web y mejorar su experiencia. Puede configurar o rechazar su uso pulsando en Configurar.",
-    "cookie_btn_configure": "Configurar",
-    "cookie_btn_reject_all": "Rechazar todas",
-    "cookie_btn_accept_all": "Aceptar todas",
-    "cookie_modal_title": "Configuración de Cookies",
-    "cookie_modal_desc": "Gestione sus preferencias de privacidad y consentimiento de cookies.",
-    "cookie_cat_necessary_title": "Cookies Técnicas / Necesarias",
-    "cookie_cat_necessary_desc": "Permiten funciones básicas como la navegación y la persistencia de configuraciones (ej. tema visual, división de pantalla). No se pueden desactivar.",
-    "cookie_cat_analytics_title": "Cookies de Análisis / Estadísticas",
-    "cookie_cat_analytics_desc": "Nos ayudan a entender cómo interactúan los usuarios con la web, detectando errores y midiendo el rendimiento de forma anónima a través de Google Analytics.",
-    "cookie_cat_marketing_title": "Cookies de Marketing / Publicitarias",
-    "cookie_cat_marketing_desc": "Se utilizan para realizar el seguimiento de los visitantes en la web con el fin de mostrar anuncios que sean relevantes y atractivos para el usuario.",
-    "cookie_cat_always_active": "Obligatorio",
-    "cookie_btn_save_preferences": "Guardar Preferencias",
-    "cookie_consent_saved": "Preferencias de cookies guardadas"
+    "sidebar_about": "Ayuda",
+    "about_title": "Ayuda"
   },
   en: {
     "sidebar_preview": "Full Page",
@@ -344,60 +316,8 @@ const TRANSLATIONS = {
     "default_folder_name": "project",
     "default_file_name": "file",
     "imported_project_name": "imported-project",
-    "sidebar_about": "About",
-    "about_title": "About HTML Viewer",
-    "about_what_title": "What is HTML Viewer?",
-    "about_what_desc": "HTML Viewer is a free, browser-based code editor for web development. Write, edit, and preview HTML, CSS, and JavaScript in real-time with no installation or signup required. Perfect for web developers, students, and designers who need to rapidly prototype, test code snippets, or learn web development interactively.",
-    "about_features_title": "Key Features",
-    "about_feat_live": "Live real-time preview",
-    "about_feat_multi": "Multi-file editor",
-    "about_feat_responsive": "Responsive testing",
-    "about_feat_export": "Import / Export",
-    "about_feat_monaco": "Monaco Editor",
-    "about_feat_theme": "Dark & Light theme",
-    "about_feat_lang": "Bilingual (EN/ES)",
-    "about_feat_offline": "Works offline",
-    "about_faq_title": "Frequently Asked Questions",
-    "about_faq_q1": "Is HTML Viewer free?",
-    "about_faq_a1": "Yes, HTML Viewer is completely free. There are no paid plans, no registration required, and no ads. All files are processed locally in your browser.",
-    "about_faq_q2": "Is my code stored on any server?",
-    "about_faq_a2": "The code you write is processed and stored locally in your browser. Optional analytics and externally hosted resources are explained separately in the privacy and cookie policies.",
-    "about_faq_q3": "Can I use HTML Viewer without an Internet connection?",
-    "about_faq_a3": "Yes. Once the page is loaded, the editor works fully offline. You can write, preview, and export your code without a connection.",
-    "about_faq_q4": "Which browsers are supported?",
-    "about_faq_a4": "HTML Viewer works on all modern browsers: Chrome, Firefox, Safari, Edge, and Opera. We recommend Chrome or Edge for the best experience with the Monaco editor.",
-    "about_faq_q5": "Can I work with multi-file projects?",
-    "about_faq_a5": "Yes. Switch to Files mode to create projects with multiple HTML, CSS, JS, and image files organized in folders. You can import and export projects as ZIP archives.",
-    "about_shortcuts_title": "Keyboard Shortcuts",
-    "about_resources_title": "Guides and documentation",
-    "about_resources_desc": "Learn live preview, multi-file projects and reliable ZIP import or export workflows.",
-    "about_sc_undo": "Undo",
-    "about_sc_redo": "Redo",
-    "about_sc_save": "Export file",
-    "about_sc_zoom": "Zoom in/out",
-    "about_sc_reset_zoom": "Reset zoom",
-    "about_footer": "Made with ❤ for the web development community.",
-    "legal_notice_title": "Legal Information",
-    "legal_aviso_short": "Legal Notice",
-    "legal_privacidad_short": "Privacy",
-    "legal_cookies_short": "Cookies",
-    "guides_short": "Guides",
-    "cookie_banner_title": "Cookie Control",
-    "cookie_banner_desc": "We use our own and third-party cookies to analyze the use of our website and improve your experience. You can configure or reject their use by clicking Configure.",
-    "cookie_btn_configure": "Configure",
-    "cookie_btn_reject_all": "Reject all",
-    "cookie_btn_accept_all": "Accept all",
-    "cookie_modal_title": "Cookie Settings",
-    "cookie_modal_desc": "Manage your privacy preferences and cookie consent.",
-    "cookie_cat_necessary_title": "Technical / Necessary Cookies",
-    "cookie_cat_necessary_desc": "Enable basic functions such as navigation and persistence of settings (e.g. visual theme, screen split). They cannot be disabled.",
-    "cookie_cat_analytics_title": "Analytics / Statistical Cookies",
-    "cookie_cat_analytics_desc": "Help us understand how users interact with the website, detecting errors and measuring performance anonymously through Google Analytics.",
-    "cookie_cat_marketing_title": "Marketing / Advertising Cookies",
-    "cookie_cat_marketing_desc": "Used to track visitors across the website in order to display ads that are relevant and engaging for the user.",
-    "cookie_cat_always_active": "Required",
-    "cookie_btn_save_preferences": "Save Preferences",
-    "cookie_consent_saved": "Cookie preferences saved"
+    "sidebar_about": "Help",
+    "about_title": "Help"
   }
 };
 
@@ -533,7 +453,10 @@ const PREVIEW_RENDERING_LABEL = currentLocale === 'es' ? 'Renderizando' : 'Rende
 const PREVIEW_READY_LABEL = currentLocale === 'es' ? 'Listo' : 'Ready';
 const PREVIEW_NOT_FOUND_LABEL = currentLocale === 'es' ? 'No encontrado' : 'Not found';
 const MONACO_VERSION = '0.39.0';
-const MONACO_BASE_PATH = `assets/vendor/monaco-editor/${MONACO_VERSION}/min/vs`;
+// Resolve lazy libraries from the bundle, not the localized document URL.
+// This also preserves Simple mode when index.html is opened via file://.
+const APP_ROOT_URL = new URL('.', document.currentScript?.src || document.baseURI).href;
+const MONACO_BASE_PATH = new URL(`assets/vendor/monaco-editor/${MONACO_VERSION}/min/vs`, APP_ROOT_URL).href;
 const MONACO_LOADER_PATH = `${MONACO_BASE_PATH}/loader.js`;
 const MONACO_LOAD_TIMEOUT_MS = 12000;
 const MONACO_RETRY_DELAY_MS = 1200;
@@ -550,9 +473,12 @@ window.addEventListener('resize', updateEditorContentLeft);
 const HISTORY_DEBOUNCE_MS = 250;
 const MAX_TOASTS = 3;
 const PROJECT_PREVIEW_PREFIX = '__html_viewer_project__';
-const PROJECT_PREVIEW_SW_VERSION = '20260618-2';
-const PROJECT_PREVIEW_SW_URL = `preview-sw.js?v=${PROJECT_PREVIEW_SW_VERSION}`;
+const PROJECT_PREVIEW_VERSION_PARAM = '__html_viewer_version';
+const PROJECT_PREVIEW_SW_VERSION = '20260811-1';
+const PROJECT_PREVIEW_SW_URL = new URL(`preview-sw.js?v=${PROJECT_PREVIEW_SW_VERSION}`, APP_ROOT_URL).href;
+const PROJECT_PREVIEW_SW_SCOPE = new URL(`${PROJECT_PREVIEW_PREFIX}/`, APP_ROOT_URL).pathname;
 const PROJECT_PREVIEW_SW_READY_TIMEOUT_MS = 1800;
+const PROJECT_PREVIEW_MESSAGE_TIMEOUT_MS = 8000;
 const PROJECT_PREVIEW_DEBOUNCE_MIN_MS = 90;
 const PROJECT_PREVIEW_DEBOUNCE_MAX_MS = 650;
 const EMPTY_PROJECT_PREVIEW_MESSAGE = currentLocale === 'es' ? 'No hay archivos en el proyecto' : 'There are no files in the project';
@@ -563,6 +489,7 @@ const fallbackCurrentLine = document.getElementById('fallback-current-line');
 const filenameInput = document.getElementById('editor-filename');
 const previewIframe = document.getElementById('preview-iframe');
 const editorPlaceholder = document.getElementById('editor-placeholder');
+const previewStatus = document.getElementById('preview-status');
 
 // Toast Notification Helper
 function showToast(message, type = 'success') {
@@ -609,28 +536,48 @@ function showToast(message, type = 'success') {
 let editor;
 let isResizing = false;
 let previewFrameRequest = 0;
-let previewRenderId = 0;
+const previewLifecycle = {
+  generation: 0,
+  committedGeneration: 0,
+  scheduledRequest: null,
+  expectedNavigation: null,
+  initialized: false,
+  phase: 'idle',
+  mode: 'srcdoc',
+  activeDiagnosticToken: '',
+  projectPath: '',
+  projectSearch: '',
+  projectHash: '',
+  homeNavigationPending: false,
+  isAwayFromHome: false,
+  sessionGeneration: 0
+};
 let lastPreviewCode = '';
 let renderingTimeoutId = null;
 let monacoLoaded = false;
 let editorFontSize = EDITOR_DEFAULT_FONT_SIZE;
-let projectPreviewSessionId = `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+let projectPreviewSessionId = getOrCreatePreviewSessionId();
 let projectPreviewServiceWorkerPromise = null;
 let projectPreviewServiceWorker = null;
 let projectPreviewVersion = 0;
+let projectPreviewIssuedVersion = 0;
 let projectPreviewLastUrl = '';
 let projectPreviewNeedsFullSync = true;
 let projectPreviewKnownPaths = new Set();
-let projectPreviewDirtyPaths = new Set();
-let projectPreviewCurrentPath = '';
+let projectPreviewDirtyPaths = new Map();
+let projectPreviewDirtySerial = 0;
+let projectPreviewFullDirtySerial = 0;
+let projectPreviewSyncQueue = Promise.resolve();
 let projectPreviewMissingPath = '';
+let projectPreviewNotifiedMissingPath = '';
 let projectPreviewSiteRoot = '';
 let previewShouldRestoreEditorFocus = false;
-let previewAllowFocusOnNextRender = false;
 let previewBlockFocusForCurrentRender = false;
 let projectPreviewLastBlockFocus = null;
-let previewHomeNavigationPending = false;
-let previewIsAwayFromHome = false;
+let previewLastUserInteractionAt = 0;
+let appStateInitialized = false;
+let mobileControlsInitialized = false;
 
 // Unified / Separated mode state variables
 let editorMode = 'unified'; // 'unified' or 'split'
@@ -640,7 +587,7 @@ let unifiedModel;
 const fileModels = {}; // fileId -> monaco.editor.ITextModel
 
 const TEXT_EXTENSIONS = new Set([
-  'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'json', 'map', 'webmanifest', 'md', 'txt', 'xml', 'svg'
+  'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'json', 'map', 'webmanifest', 'md', 'txt', 'csv', 'yaml', 'yml', 'xml', 'svg'
 ]);
 const IMAGE_EXTENSIONS = new Set(['png', 'apng', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'ico', 'avif', 'bmp']);
 const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'm4a']);
@@ -683,4 +630,17 @@ const MAX_HISTORY = 50;
 let isRestoringHistory = false;
 let typingSessionActive = false;
 let typingDebounceTimeout = null;
+// These values are deliberately kept outside Monaco.  They let the editor
+// hand off a stable document to history while Monaco/fallback events are
+// delivering the already-mutated value.
+let unifiedLastKnownContent = '';
+let fallbackLastKnownValue = '';
+let historyRestorePromise = Promise.resolve();
+let historyRestoreInProgress = false;
+
+// A replacement import is transactional.  Readers may finish out of order,
+// but only the latest intention is allowed to commit.
+let importGeneration = 0;
+let importCommitInProgress = false;
+let projectIdentity = 0;
 

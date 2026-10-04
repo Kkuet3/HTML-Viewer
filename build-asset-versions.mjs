@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { publicPages } from './public-files.mjs';
 
 const versionedAssets = [
   'app.bundle.js',
   'lucide.min.js',
   'styles.min.css',
-  'seo-pages.min.css',
 ];
 
 const versions = new Map();
@@ -20,7 +20,7 @@ async function collectHtmlFiles(directory = '.') {
   const files = [];
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name.startsWith('.') || ['assets', 'node_modules', 'vendor'].includes(entry.name)) continue;
+    if (entry.name.startsWith('.')) continue;
     const fullPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       files.push(...await collectHtmlFiles(fullPath));
@@ -31,7 +31,11 @@ async function collectHtmlFiles(directory = '.') {
   return files;
 }
 
-const htmlFiles = await collectHtmlFiles();
+const htmlFiles = [];
+for (const entry of publicPages) {
+  if (entry.endsWith('.html')) htmlFiles.push(entry);
+  else htmlFiles.push(...await collectHtmlFiles(entry));
+}
 let changedCount = 0;
 
 for (const file of htmlFiles) {

@@ -73,6 +73,8 @@ function getMimeTypeForFilename(filename) {
     case 'css':
       return 'text/css';
     case 'js':
+    case 'mjs':
+    case 'cjs':
     case 'jsx':
       return 'text/javascript';
     case 'ts':
@@ -87,6 +89,11 @@ function getMimeTypeForFilename(filename) {
       return 'text/markdown';
     case 'txt':
       return 'text/plain';
+    case 'csv':
+      return 'text/csv';
+    case 'yaml':
+    case 'yml':
+      return 'application/yaml';
     case 'xml':
       return 'application/xml';
     case 'svg':
@@ -132,6 +139,8 @@ function getMimeTypeForFilename(filename) {
       return 'video/webm';
     case 'mov':
       return 'video/quicktime';
+    case 'pdf':
+      return 'application/pdf';
     case 'wasm':
       return 'application/wasm';
     default:
@@ -145,6 +154,20 @@ function isTextFilename(filename) {
 
 function isEditableFile(file) {
   return file && !file.isFolder && !file.isBinary;
+}
+
+// One document contract for both Monaco and the fallback textarea.  Callers
+// that need the currently displayed document should use this rather than
+// guessing from the selected entry or from a compiled preview URL.
+function getCurrentEditorDocumentText() {
+  if (monacoLoaded && editor?.getModel?.()) {
+    return editor.getModel().getValue();
+  }
+  return fallbackTextarea?.value || '';
+}
+
+function getCurrentEditorDocumentModel() {
+  return monacoLoaded ? (editor?.getModel?.() || null) : null;
 }
 
 function createTextFileRecord(name, content = '', options = {}) {
@@ -194,12 +217,9 @@ function createFolderRecord(name, options = {}) {
 function getFileText(file) {
   if (!file || file.isFolder) return '';
   if (!isRestoringHistory && editorMode === 'unified' && file.id === getEntryFile()?.id) {
-    if (monacoLoaded && typeof unifiedModel !== 'undefined' && unifiedModel) {
-      return unifiedModel.getValue();
-    }
-    if (fallbackTextarea) {
-      return fallbackTextarea.value;
-    }
+    const currentModel = getCurrentEditorDocumentModel();
+    if (currentModel && currentModel === unifiedModel) return currentModel.getValue();
+    if (!monacoLoaded && fallbackTextarea) return fallbackTextarea.value;
   }
   if (monacoLoaded && fileModels[file.id]) {
     return fileModels[file.id].getValue();

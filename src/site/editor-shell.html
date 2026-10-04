@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="{{lang}}" data-theme="dark" class="editor-page">
+<head>
+  <meta charset="utf-8">
+  {{head}}
+  <script>
+    (() => {
+      try {
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'light' || savedTheme === 'dark') {
+          document.documentElement.setAttribute('data-theme', savedTheme);
+        }
+
+        const savedSplit = Number.parseFloat(localStorage.getItem('split-percent'));
+        if (Number.isFinite(savedSplit)) {
+          const clampedSplit = Math.min(88, Math.max(12, savedSplit));
+          document.documentElement.style.setProperty('--saved-split-percent', `${clampedSplit}%`);
+        }
+      } catch {
+        // Keep first paint deterministic if storage is unavailable.
+      }
+
+    })();
+  </script>
+  <link rel="preload" href="/assets/fonts/inter-latin-v20.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/assets/fonts/outfit-latin-v15.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/assets/fonts/jetbrains-mono-latin-v24.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/assets/vendor/monaco-editor/0.39.0/min/vs/loader.js" as="script">
+  <style>
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: optional; src: url('/assets/fonts/inter-latin-v20.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 500; font-display: optional; src: url('/assets/fonts/inter-latin-v20.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: optional; src: url('/assets/fonts/inter-latin-v20.woff2') format('woff2'); }
+    @font-face { font-family: 'Outfit'; font-style: normal; font-weight: 700; font-display: optional; src: url('/assets/fonts/outfit-latin-v15.woff2') format('woff2'); }
+    @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400; font-display: optional; src: url('/assets/fonts/jetbrains-mono-latin-v24.woff2') format('woff2'); }
+    @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 500; font-display: optional; src: url('/assets/fonts/jetbrains-mono-latin-v24.woff2') format('woff2'); }
+
+    /* Critical CSS: Theme Variables & Reset */
+    :root {
+      --bg-color: #06070a;
+      --panel-bg: #0b0d13;
+      --panel-header-bg: #0f121a;
+      --panel-border: #1d2230;
+      --sidebar-bg: #090a0e;
+      --text-primary: #ffffff;
+      --text-secondary: #cbd5e1;
+      --text-muted: #94a3b8;
+      --accent-color: #8842FD;
+      --accent-hover: #7334ec;
+      --accent-glow: rgba(136, 66, 253, 0.15);
+      --scrollbar-thumb: #1f2433;
+      --editor-content-left: 68px;
+    }
+    [data-theme="light"] {
+      --bg-color: #f6f8fa;
+      --panel-bg: #ffffff;
+      --panel-header-bg: #f1f4f8;
+      --panel-border: #e1e6eb;
+      --sidebar-bg: #fafbfc;
+      --text-primary: #020617;
+      --text-secondary: #334155;
+      --text-muted: #475569;
+      --scrollbar-thumb: #cbd5e1;
+    }
+    @media (max-width: 768px) {
+      :root {
+        --editor-content-left: 44px;
+      }
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, html { height: 100vh; overflow: hidden; background: var(--bg-color); color: var(--text-primary); font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    .app-container { display: flex; width: 100vw; height: 100vh; position: relative; }
+    .sidebar { width: 260px; background: var(--sidebar-bg); border-right: 1px solid var(--panel-border); display: flex; flex-direction: column; flex-shrink: 0; }
+    .panel { display: flex; flex-direction: column; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; overflow: hidden; }
+    .panel-header { display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 12px; background: var(--panel-header-bg); border-bottom: 1px solid var(--panel-border); }
+    .panel-body { flex-grow: 1; position: relative; overflow: hidden; }
+    .editor-container { position: relative; width: 100%; height: 100%; }
+    .editor-placeholder { position: absolute; top: 16px; left: var(--editor-content-left); z-index: 2; color: var(--text-secondary); font-family: 'JetBrains Mono', Consolas, monospace; font-size: 13px; line-height: 18px; pointer-events: none; opacity: 0.72; }
+    .fallback-textarea { display: block; position: relative; z-index: 2; width: 100%; height: 100%; border: none; outline: none; resize: none; overflow: auto; background: transparent; color: var(--text-primary); font-family: 'JetBrains Mono', Consolas, monospace; font-size: 13px; line-height: 18px; padding: 16px 16px 16px var(--editor-content-left); white-space: pre; }
+    .fallback-line-numbers { position: absolute; z-index: 1; top: 16px; left: 0; width: var(--editor-content-left); color: var(--text-muted); font-family: 'JetBrains Mono', Consolas, monospace; font-size: 13px; line-height: 18px; text-align: center; white-space: pre; pointer-events: none; }
+    .fallback-current-line { position: absolute; z-index: 0; top: 16px; left: 0; right: 0; height: 18px; background: rgba(148, 163, 184, 0.055); pointer-events: none; }
+    .editor-container.monaco-ready .fallback-editor-chrome { display: none; }
+    .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
+
+    /* Minified layout.css inlined */
+    :root{--workspace-edge: 16px;--workspace-panel-gap: 8px;--workspace-resizer-width: 16px;--editor-panel-min: 420px;--preview-panel-min: 420px;}.workspace-shell{--split-percent: var(--saved-split-percent, 55%);display: flex;align-items: stretch;min-width: 0;}.workspace-shell>.panel{margin-top: var(--workspace-edge);margin-bottom: var(--workspace-edge);}.workspace-shell>.panel--editor{flex: 0 1 var(--split-percent);min-width: var(--editor-panel-min);margin-left: var(--workspace-edge);margin-right: var(--workspace-panel-gap);}.workspace-shell>.workspace-resizer{flex: 0 0 var(--workspace-resizer-width);width: var(--workspace-resizer-width);margin: var(--workspace-edge) calc(var(--workspace-panel-gap) * -1);}.workspace-shell>.panel--preview{flex: 1 1 0;min-width: var(--preview-panel-min);margin-left: var(--workspace-panel-gap);margin-right: var(--workspace-edge);}.panel-header--preview{gap: 12px;min-width: 0;}.panel-title--icon{flex: 0 0 24px;min-width: 24px;justify-content: flex-start;}.preview-header-actions{display: flex;align-items: center;gap: 8px;margin-left: auto;flex: 0 1 auto;min-width: 0;}.device-controls{flex: 0 1 auto;min-width: 0;}.device-controls .control-btn{min-width: 28px;white-space: nowrap;justify-content: center;}@container (max-width: 440px){.panel-header--preview{padding-inline: 10px;}.device-controls .control-btn span{max-width: 0;opacity: 0;}.device-controls .control-btn{padding-inline: 7px;gap: 0;}}@media (max-width: 1152px){.workspace-shell>.panel{margin: 0;}.workspace-shell>.panel--editor,.workspace-shell>.panel--preview{min-width: 0;}}
+  </style>
+  <link rel="stylesheet" href="/styles.min.css">
+  <!-- Lucide Icons (local copy avoids intermittent CDN startup failures) -->
+  <script defer src="/lucide.min.js"></script>
+  <!-- JSZip is loaded on demand by the import/export module. -->
+  <script defer src="/app.bundle.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#workspace-container">{{skip}}</a>
+
+  <div class="app-container" id="editor">
+    <!-- Mobile Header -->
+    <header class="mobile-header">
+      <button id="btn-mobile-menu" class="mobile-menu-toggle" data-i18n-aria-label="mobile_open_menu" aria-label="Abrir menú">
+        <i data-lucide="menu"></i>
+      </button>
+      <div class="mobile-brand">HTML Viewer</div>
+      <button id="btn-mobile-help" class="mobile-help-link" aria-label="{{help}}">?</button>
+      <div class="mobile-tabs">
+        <button class="mobile-tab-btn active" data-tab="editor">
+          <i data-lucide="code-2"></i>
+          <span data-i18n="mobile_code">Código</span>
+        </button>
+        <button class="mobile-tab-btn" data-tab="preview">
+          <i data-lucide="eye"></i>
+          <span data-i18n="mobile_view">Vista</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div>
+        <div class="brand-section">
+          <div class="brand-title">HTML Viewer</div>
+          <button id="btn-sidebar-close" class="sidebar-close-btn" data-i18n-aria-label="mobile_close_menu" aria-label="Cerrar menú">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+
+        <nav class="nav-menu" aria-label="{{editorNav}}">
+          <div class="menu-category" data-i18n="cat_view">Vista</div>
+          <button id="btn-preview-full" class="nav-button">
+            <i data-lucide="external-link"></i>
+            <span data-i18n="sidebar_preview">Página completa</span>
+          </button>
+          <button id="btn-highlight-full" class="nav-button">
+            <i data-lucide="maximize-2"></i>
+            <span data-i18n="sidebar_focus">Modo Enfoque</span>
+          </button>
+
+          <div class="menu-category" data-i18n="cat_file">Archivo</div>
+          <button id="btn-import" class="nav-button">
+            <i data-lucide="file-up"></i>
+            <span data-i18n="sidebar_import">Importar Proyecto</span>
+          </button>
+          <button id="btn-export" class="nav-button">
+            <i data-lucide="file-down"></i>
+            <span data-i18n="sidebar_export">Exportar HTML</span>
+          </button>
+
+          <div class="menu-category" data-i18n="cat_actions">Acciones</div>
+          <button id="btn-sample" class="nav-button">
+            <i data-lucide="sparkles"></i>
+            <span data-i18n="sidebar_sample">Cargar Ejemplo</span>
+          </button>
+          <button id="btn-clear" class="nav-button">
+            <i data-lucide="trash-2"></i>
+            <span data-i18n="sidebar_clear">Limpiar Todo</span>
+          </button>
+        </nav>
+      </div>
+
+      <div class="footer-section">
+        <button id="btn-about" class="nav-button about-btn" aria-controls="about-panel">
+          <i data-lucide="info"></i>
+          <span data-i18n="sidebar_about">About</span>
+        </button>
+        <button id="btn-theme" class="theme-toggle">
+          <span data-i18n="sidebar_mode_dark">Modo Oscuro</span>
+          <span class="theme-icon-container">
+            <i data-lucide="moon" class="icon-moon"></i>
+            <i data-lucide="sun" class="icon-sun"></i>
+          </span>
+        </button>
+        <div class="sidebar-links">
+          <a href="https://github.com/Kkuet3/HTML-Viewer" rel="external">GitHub</a>
+          {{languageLink}}
+        </div>
+      </div>
+    </aside>
+
+    <!-- Workspace -->
+    <main class="workspace workspace-shell" id="workspace-container" tabindex="-1">
+      <!-- Overlay to protect mouse resizing events from being swallowed by iframe -->
+      <div class="resize-overlay" id="resize-overlay"></div>
+
+      <!-- Editor Panel -->
+      <section class="panel editor-panel panel--editor" id="editor-panel">
+        <header class="panel-header panel-header--editor">
+          <!-- Button to toggle files explorer sidebar -->
+          <button id="btn-toggle-explorer" class="explorer-toggle-btn" data-i18n-title="toggle_explorer_title" data-i18n-aria-label="toggle_explorer_title" title="Mostrar/ocultar menú de archivos" aria-label="Mostrar/ocultar menú de archivos" style="display: none;">
+            <i data-lucide="sidebar"></i>
+          </button>
+
+          <div class="panel-title" id="editor-panel-title">
+            <i data-lucide="code-2"></i>
+            <div class="filename-container">
+              <input type="text" id="editor-filename" class="filename-input" value="index" spellcheck="false" data-i18n-title="rename_file" title="Cambiar nombre de archivo"><span class="filename-extension">.html</span>
+            </div>
+          </div>
+
+          <!-- Active file summary (visible only in Archivos mode) -->
+          <button type="button" class="active-file-summary" id="active-file-summary" style="display: none;" data-i18n-aria-label="change_file_aria" aria-label="Cambiar archivo" aria-live="polite">
+            <span id="active-file-name" data-i18n="no_file_selected">Ningún archivo seleccionado</span>
+            <i data-lucide="chevron-down" class="active-file-chevron"></i>
+          </button>
+
+          <div class="panel-header-right" style="display: flex; align-items: center; gap: 12px;">
+            <!-- Historial de Cambios (Deshacer/Rehacer) -->
+            <div class="editor-mode-selector">
+              <button id="btn-undo" class="mode-btn" data-i18n-title="tooltip_undo" data-i18n-aria-label="label_undo" title="Deshacer (Ctrl+Z)" aria-label="Deshacer" disabled>
+                <i data-lucide="undo"></i>
+              </button>
+              <button id="btn-redo" class="mode-btn" data-i18n-title="tooltip_redo" data-i18n-aria-label="label_redo" title="Rehacer (Ctrl+Y)" aria-label="Rehacer" disabled>
+                <i data-lucide="redo"></i>
+              </button>
+            </div>
+
+            <div class="editor-mode-selector" id="editor-mode-toggle-container">
+              <button id="btn-mode-unified" class="mode-btn active" data-i18n-title="mode_unified_title" title="Archivo único">
+                <i data-lucide="file-code"></i>
+                <span data-i18n="mode_unified">Simple</span>
+              </button>
+              <button id="btn-mode-split" class="mode-btn" data-i18n-title="mode_split_title" title="Archivos separados">
+                <i data-lucide="files"></i>
+                <span data-i18n="mode_split">Archivos</span>
+              </button>
+            </div>
+          </div>
+        </header>
+        <div class="panel-body">
+          <div class="editor-workspace-wrapper">
+            <!-- File Explorer Sidebar -->
+            <div class="file-explorer" id="file-explorer" style="display: none;">
+              <div class="file-explorer-header">
+                <div class="file-explorer-heading">
+                  <span data-i18n="choose_file">Elegir archivo</span>
+                </div>
+                <div class="file-explorer-actions" style="display: flex; gap: 4px;">
+                  <button class="file-explorer-btn" id="btn-upload-asset" data-i18n-title="upload_files" data-i18n-aria-label="upload_files" title="Subir archivos" aria-label="Subir archivos">
+                    <i data-lucide="upload"></i>
+                  </button>
+                  <button class="file-explorer-btn" id="btn-new-file" data-i18n-title="new_file" data-i18n-aria-label="new_file" title="Nuevo archivo" aria-label="Nuevo archivo">
+                    <i data-lucide="file-plus"></i>
+                  </button>
+                  <button class="file-explorer-btn" id="btn-new-folder" data-i18n-title="new_folder" data-i18n-aria-label="new_folder" title="Nueva carpeta" aria-label="Nueva carpeta">
+                    <i data-lucide="folder-plus"></i>
+                  </button>
+                </div>
+              </div>
+              <div class="file-list" id="file-list">
+                <!-- File items injected dynamically -->
+              </div>
+              <div class="explorer-resizer" id="explorer-resizer"></div>
+            </div>
+
+            <!-- Main Editor Area -->
+            <div class="editor-body-area" style="position: relative; flex-grow: 1; height: 100%;">
+              <div id="editor-container" class="editor-container">
+                <div id="editor-placeholder" class="editor-placeholder" data-i18n="placeholder_html">Escribe aquí tu HTML</div>
+                <div id="fallback-current-line" class="fallback-current-line fallback-editor-chrome" aria-hidden="true"></div>
+                <div id="fallback-line-numbers" class="fallback-line-numbers fallback-editor-chrome" aria-hidden="true">1</div>
+                <textarea id="fallback-textarea" class="fallback-textarea" spellcheck="false" wrap="off" style="display: none;"></textarea>
+              </div>
+              <div id="asset-preview-panel" class="asset-preview-panel" style="display: none;">
+                <div class="asset-preview-stage" id="asset-preview-stage"></div>
+                <div class="asset-preview-details">
+                  <div>
+                    <div class="asset-preview-name" id="asset-preview-name"></div>
+                    <div class="asset-preview-meta" id="asset-preview-meta"></div>
+                  </div>
+                  <div class="asset-preview-actions">
+                    <button class="asset-action-btn" id="btn-copy-asset-path" data-i18n-title="title_path" title="Copiar ruta">
+                      <i data-lucide="copy"></i>
+                      <span data-i18n="btn_path">Ruta</span>
+                    </button>
+                    <button class="asset-action-btn" id="btn-copy-asset-img" data-i18n-title="title_img" title="Copiar etiqueta de imagen">
+                      <i data-lucide="image"></i>
+                      <span data-i18n="btn_img">img</span>
+                    </button>
+                    <button class="asset-action-btn" id="btn-copy-asset-css" data-i18n-title="title_css" title="Copiar url CSS">
+                      <i data-lucide="brackets"></i>
+                      <span data-i18n="btn_css">CSS</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Draggable Handle -->
+      <div class="resize-handle workspace-resizer" id="resize-handle">
+        <div class="resize-line"></div>
+      </div>
+
+      <!-- Preview Panel -->
+        <section class="panel preview-panel panel--preview" id="preview-panel">
+          <header class="panel-header panel-header--preview">
+            <div class="panel-title panel-title--icon">
+              <i data-lucide="eye"></i>
+            </div>
+            <div id="preview-status" class="preview-status" role="status" aria-live="polite">Listo</div>
+
+            <!-- Responsive sizes controls -->
+          <div class="preview-header-actions" id="preview-header-actions">
+            <button class="preview-reload-btn preview-home-btn" id="btn-preview-home" data-i18n-title="emulator_home" data-i18n-aria-label="emulator_home" title="Volver a la página inicial" aria-label="Volver a la página inicial" disabled>
+              <i data-lucide="house"></i>
+            </button>
+            <button class="preview-reload-btn" id="btn-preview-reload" data-i18n-title="emulator_reload" data-i18n-aria-label="emulator_reload" title="Recargar previsualización" aria-label="Recargar previsualización">
+              <i data-lucide="rotate-cw"></i>
+            </button>
+            <button class="preview-reload-btn preview-console-btn" id="btn-preview-console" title="Consola de diagnóstico" aria-label="Abrir consola de diagnóstico" aria-expanded="false">
+              <i data-lucide="terminal-square"></i>
+              <span class="preview-console-badge" id="preview-console-badge" hidden>0</span>
+            </button>
+            <div class="preview-controls device-controls" id="preview-controls">
+              <button class="control-btn active" data-size="100%" data-i18n-title="emulator_desktop_title" data-i18n-aria-label="emulator_desktop_title" title="Vista de escritorio" aria-label="Vista de escritorio">
+                <i data-lucide="monitor"></i>
+                <span data-i18n="emulator_desktop">Escritorio</span>
+              </button>
+              <button class="control-btn" data-size="768px" data-i18n-title="emulator_tablet_title" data-i18n-aria-label="emulator_tablet_title" title="Vista de tablet" aria-label="Vista de tablet">
+                <i data-lucide="tablet"></i>
+                <span data-i18n="emulator_tablet">Tablet</span>
+              </button>
+              <button class="control-btn" data-size="375px" data-i18n-title="emulator_mobile_title" data-i18n-aria-label="emulator_mobile_title" title="Vista móvil" aria-label="Vista móvil">
+                <i data-lucide="smartphone"></i>
+                <span data-i18n="emulator_mobile">Móvil</span>
+              </button>
+            </div>
+          </div>
+        </header>
+        <div class="panel-body">
+          <!-- Live Preview Content Tab -->
+          <div class="tab-content active" id="content-preview">
+            <div class="iframe-wrapper" id="iframe-wrapper">
+              <!--
+                Sandbox rationale (security): the preview MUST stay same-origin.
+                Multi-file project mode navigates the iframe to a real same-origin
+                URL served by preview-sw.js under the isolated project scope, and the
+                app reads previewIframe.contentWindow.location for navigation state.
+                Both break under an opaque origin, so allow-same-origin is required.
+                Note: 'allow-top-navigation' and 'allow-popups' are deliberately
+                omitted so previewed code cannot hijack the top frame. True origin
+                isolation would require serving the preview from a dedicated
+                subdomain (an infra change, not configurable here).
+              -->
+              <iframe id="preview-iframe" class="preview-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads allow-pointer-lock allow-presentation"></iframe>
+            </div>
+            <section class="preview-console" id="preview-console" aria-label="Consola de diagnóstico" hidden>
+              <div class="preview-console-resizer" id="preview-console-resizer" role="separator" aria-label="Cambiar altura de la consola" aria-orientation="horizontal" tabindex="0"><span></span></div>
+              <header class="preview-console-header">
+                <div class="preview-console-title"><i data-lucide="terminal-square"></i><span>Diagnóstico</span><span class="preview-console-summary" id="preview-console-summary">Sin problemas</span></div>
+                <div class="preview-console-actions">
+                  <button type="button" id="btn-preview-console-clear">Limpiar</button>
+                  <button type="button" id="btn-preview-console-close" aria-label="Cerrar consola"><i data-lucide="x"></i></button>
+                </div>
+              </header>
+              <div class="preview-console-filters" id="preview-console-filters">
+                <button type="button" class="active" data-diagnostic-filter="all">Todos</button><button type="button" data-diagnostic-filter="error">JS</button><button type="button" data-diagnostic-filter="resource">Recursos</button><button type="button" data-diagnostic-filter="route">Rutas</button><button type="button" data-diagnostic-filter="cors">CORS/red</button>
+              </div>
+              <div class="preview-console-list" id="preview-console-list" role="log" aria-live="polite"></div>
+            </section>
+          </div>
+
+
+        </div>
+      </section>
+    </main>
+    <!-- Sidebar Overlay for Mobile -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+  </div>
+
+  <!-- Hidden File Input for automatic project import (.html or .zip) -->
+  <input type="file" id="file-input" accept=".html,.htm,.zip" style="display: none;">
+  <input type="file" id="asset-input" multiple accept=".png,.apng,.jpg,.jpeg,.webp,.gif,.svg,.ico,.avif,.bmp,.woff,.woff2,.ttf,.otf,.eot,.json,.map,.webmanifest,.txt,.md,.xml,.mp3,.wav,.ogg,.m4a,.mp4,.webm,.mov,.wasm,.css,.js,.mjs,.cjs,.html,.htm" style="display: none;">
+
+  <!-- Drag and Drop Overlay Indicator -->
+  <div class="drag-drop-overlay" id="drag-drop-overlay" style="display: none;">
+    <div class="drag-drop-card">
+      <i data-lucide="file-up" class="drag-drop-icon"></i>
+      <h3 id="drag-drop-title" data-i18n="drag_title_import">Suelta para importar archivos</h3>
+      <p id="drag-drop-description" data-i18n="drag_desc_import">Puedes soltar en cualquier zona de la aplicación</p>
+    </div>
+  </div>
+
+  <!-- Modal Exportar -->
+  <div class="modal-overlay" id="modal-export" style="display: none;">
+    <div class="modal-card">
+      <header class="modal-header">
+        <div class="modal-title-group">
+          <i data-lucide="file-down" class="modal-title-icon"></i>
+          <div>
+            <h3 data-i18n="export_title">Exportar Proyecto</h3>
+            <p data-i18n="export_subtitle">Elige el formato de salida para guardar tu código</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" id="modal-export-close" data-i18n-aria-label="mobile_close_menu" aria-label="Cerrar modal">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <div class="modal-body">
+        <button class="modal-option-btn" id="btn-export-folder-opt">
+          <div class="modal-option-icon-wrapper">
+            <i data-lucide="folder-symlink"></i>
+          </div>
+          <div class="modal-option-text">
+            <span class="modal-option-title" data-i18n="export_local_title">Carpeta Local</span>
+            <span class="modal-option-desc" data-i18n="export_local_desc">Guarda los archivos directamente en una carpeta local (requiere soporte de navegador)</span>
+          </div>
+          <span class="compatibility-badge" id="folder-export-compatibility" style="display: none;" data-i18n="export_local_unsupported">No Soportado</span>
+        </button>
+        <button class="modal-option-btn" id="btn-export-zip-opt">
+          <div class="modal-option-icon-wrapper">
+            <i data-lucide="file-archive"></i>
+          </div>
+          <div class="modal-option-text">
+            <span class="modal-option-title" data-i18n="export_zip_title">Archivo ZIP</span>
+            <span class="modal-option-desc" data-i18n="export_zip_desc">Empaqueta todos los archivos virtuales en un archivo comprimido .zip descargable</span>
+          </div>
+        </button>
+        <button class="modal-option-btn" id="btn-export-unified-opt">
+          <div class="modal-option-icon-wrapper">
+            <i data-lucide="file-code"></i>
+          </div>
+          <div class="modal-option-text">
+            <span class="modal-option-title" data-i18n="export_unified_title">Exportar como HTML único</span>
+            <span class="modal-option-desc" data-i18n="export_unified_desc">Compila y une todos los archivos en un único HTML listo para producción</span>
+          </div>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notifications container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- About Panel (slide-in from right) -->
+  <aside class="about-panel" id="about-panel" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="help-title" inert>
+    <div class="about-panel-content">
+      <header class="about-panel-header">
+        <h2 id="help-title" data-i18n="about_title">Help</h2>
+        <button class="about-close-btn" id="about-close-btn" data-i18n-aria-label="mobile_close_menu" aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <div class="about-panel-body" id="about-panel-body">{{helpContent}}
+      </div>
+    </div>
+  </aside>
+  <div class="about-overlay" id="about-overlay"></div>
+
+  <noscript><style>.app-container{display:none!important}</style><p class="nojs-note">{{nojs}}</p></noscript>
+
+</body>
+</html>

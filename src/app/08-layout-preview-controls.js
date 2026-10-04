@@ -83,7 +83,7 @@ function clampSplitPercent(percentage, workspaceWidth = workspace?.getBoundingCl
 
 function initResizer() {
   // Load saved split position
-  const savedPercent = parseFloat(localStorage.getItem('split-percent') || '55');
+  const savedPercent = parseFloat(readStoredValue('split-percent', '55'));
   // Agrupar lectura y escritura con requestAnimationFrame para evitar forced reflow en la carga inicial
   requestAnimationFrame(() => {
     const workspaceWidth = workspace?.getBoundingClientRect().width || 0;
@@ -177,7 +177,7 @@ function initResizer() {
     const workspaceRect = workspace.getBoundingClientRect();
     const editorRect = editorPanel.getBoundingClientRect();
     const currentPercent = clampSplitPercent((editorRect.width / workspaceRect.width) * 100, workspaceRect.width);
-    localStorage.setItem('split-percent', currentPercent);
+    writeStoredValue('split-percent', currentPercent);
 
     document.removeEventListener('mousemove', drag);
     document.removeEventListener('touchmove', drag);
@@ -194,7 +194,7 @@ function initExplorerResizer() {
   if (!explorer || !resizer || !overlay) return;
 
   // Load saved explorer width
-  const savedWidth = localStorage.getItem('explorer-width') || '220';
+  const savedWidth = readStoredValue('explorer-width', '220');
   let initialWidth = parseInt(savedWidth, 10);
   if (isNaN(initialWidth) || initialWidth < 170) {
     initialWidth = 170;
@@ -252,7 +252,7 @@ function initExplorerResizer() {
 
     const computedStyle = window.getComputedStyle(explorer);
     const finalWidth = parseInt(computedStyle.width, 10);
-    localStorage.setItem('explorer-width', finalWidth);
+    writeStoredValue('explorer-width', finalWidth);
 
     document.removeEventListener('mousemove', drag);
     document.removeEventListener('touchmove', drag);
@@ -334,7 +334,7 @@ document.getElementById('btn-preview-full').addEventListener('click', async () =
 
     const hasProjectPreview = await syncProjectPreviewSnapshot({ full: true });
     if (hasProjectPreview) {
-      previewWindow.location.href = `${getProjectPreviewUrl(entryFile.name)}?v=${projectPreviewVersion}`;
+      previewWindow.location.href = getProjectPreviewUrl(entryFile.name, projectPreviewVersion);
       showToast(t('toast_project_opened_virtual'));
       return;
     }
@@ -356,20 +356,20 @@ document.getElementById('btn-preview-full').addEventListener('click', async () =
 document.getElementById('btn-highlight-full').addEventListener('click', () => {
   const appContainer = document.querySelector('.app-container');
   const btn = document.getElementById('btn-highlight-full');
-  const icon = btn.querySelector('i');
+  const icon = btn.querySelector('[data-lucide]');
 
   if (appContainer.classList.contains('fullscreen-editor')) {
     appContainer.classList.remove('fullscreen-editor');
     btn.classList.remove('active');
-    icon.setAttribute('data-lucide', 'maximize-2');
+    icon?.setAttribute('data-lucide', 'maximize-2');
   } else {
     appContainer.classList.add('fullscreen-editor');
     btn.classList.add('active');
-    icon.setAttribute('data-lucide', 'minimize-2');
+    icon?.setAttribute('data-lucide', 'minimize-2');
   }
 
   // Re-render Lucide icon
-  lucide.createIcons();
+  window.lucide?.createIcons?.();
 
   queueEditorLayout();
 });
@@ -400,14 +400,19 @@ fileInput.addEventListener('change', async (e) => {
   if (!file) return;
 
   const ext = getFileExtension(file.name);
-  if (ext === 'zip') {
-    await importFromZip(file);
-  } else if (ext === 'html' || ext === 'htm') {
-    importSingleHtmlFile(file);
-  } else {
-    showToast(t('toast_format_not_supported'), 'error');
+  try {
+    if (ext === 'zip') {
+      await importFromZip(file);
+    } else if (ext === 'html' || ext === 'htm') {
+      await importSingleHtmlFile(file);
+    } else {
+      showToast(t('toast_format_not_supported'), 'error');
+    }
+  } finally {
+    // Always reset, including a rejected/slow read, so selecting the same
+    // browser file remains a valid new intention.
+    fileInput.value = '';
   }
-  fileInput.value = '';
 });
 
 if (assetInput) {
@@ -415,16 +420,20 @@ if (assetInput) {
     const selectedFiles = Array.from(e.target.files || []);
     if (selectedFiles.length === 0) return;
 
+    const targetProjectIdentity = projectIdentity;
     const records = [];
-    for (const file of selectedFiles) {
-      if (file.name.startsWith('.')) continue;
-      records.push(await createRecordFromBrowserFile(file, pendingAssetTargetPath));
+    try {
+      for (const file of selectedFiles) {
+        if (file.name.startsWith('.')) continue;
+        records.push(await createRecordFromBrowserFile(file, pendingAssetTargetPath));
+      }
+      if (targetProjectIdentity !== projectIdentity) return;
+      addFilesToProject(records, '');
+      showToast(t('toast_files_added', { count: records.length }));
+    } finally {
+      pendingAssetTargetPath = '';
+      assetInput.value = '';
     }
-
-    addFilesToProject(records, '');
-    showToast(t('toast_files_added', { count: records.length }));
-    pendingAssetTargetPath = '';
-    assetInput.value = '';
   });
 }
 
@@ -433,7 +442,9 @@ document.getElementById('btn-export').addEventListener('click', () => {
   if (!editor) return;
   if (editorMode === 'unified') {
     try {
-      const code = getCurrentPreviewCode();
+      // Export the source document, not the preview's session-scoped Blob
+      // URLs.  Preview rewriting is a renderer concern.
+      const code = getCurrentEditorDocumentText();
       const blob = new Blob([code], { type: 'text/html;charset=utf-8' });
       const link = document.createElement('a');
 

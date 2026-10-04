@@ -1,0 +1,4 @@
+:root { color-scheme: light; }
+body { margin: 0; font-family: system-ui, sans-serif; background: rgb(244, 247, 252); }
+main { padding: 24px; }
+#nested-image { width: 32px; height: 32px; }

@@ -1,6 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://instantviewer.online/sitemap.xml
-
-# IndexNow key location: https://instantviewer.online/78c6e17352c140e5be2f07b16029a38c.txt

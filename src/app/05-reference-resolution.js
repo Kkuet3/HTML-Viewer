@@ -61,20 +61,29 @@ function splitUnifiedCode(unifiedHtml) {
 
 function replaceProjectWithSplitSource(unifiedHtml, { emptyAsSingleFile = false } = {}) {
   const rootFolder = getProjectRootFolder();
-  if (emptyAsSingleFile && !String(unifiedHtml || '').trim()) {
-    files = [
-      createTextFileRecord(rootFolder + 'index.html', '', { id: '1' })
-    ];
-    openFileIds = ['1'];
-  } else {
-    const { html, css, js } = splitUnifiedCode(unifiedHtml);
-    files = [
-      createTextFileRecord(rootFolder + 'index.html', html, { id: '1' }),
-      createTextFileRecord(rootFolder + 'styles.css', css, { id: '2' }),
-      createTextFileRecord(rootFolder + 'script.js', js, { id: '3' })
-    ];
-    openFileIds = ['1', '2', '3'];
+  // Switching modes is a representation change, not an extraction step.
+  // Keep the document byte-for-byte intact: JSON scripts, import maps,
+  // modules, media attributes and script ordering all carry semantics.
+  const content = emptyAsSingleFile && !String(unifiedHtml || '').trim()
+    ? ''
+    : String(unifiedHtml || '');
+  files = [createTextFileRecord(rootFolder + 'index.html', content, { id: '1' })];
+
+  // Keep the long-standing empty editor slots for a plain document so old
+  // projects that immediately open styles.css/script.js remain editable. A
+  // document that already contains style/script content stays a single
+  // faithful HTML file; no inline code or special script type is extracted.
+  if (
+    content.trim() &&
+    !/<style\b/i.test(content) &&
+    !/<script\b/i.test(content)
+  ) {
+    files.push(
+      createTextFileRecord(rootFolder + 'styles.css', '', { id: '2' }),
+      createTextFileRecord(rootFolder + 'script.js', '', { id: '3' })
+    );
   }
+  openFileIds = ['1'];
 
   activeFileId = '1';
   selectedEntryFileId = '1';
@@ -83,22 +92,13 @@ function replaceProjectWithSplitSource(unifiedHtml, { emptyAsSingleFile = false 
 
 // Helper to resolve relative paths to canonical virtual file system paths
 function resolveRelativePath(basePath, relativePath) {
-  const normalizedRelativePath = normalizeReferencePathValue(relativePath);
-  // If it's an absolute URL or data URL, return it as-is
-  if (/^(https?:|data:|blob:|mailto:|tel:|#)/i.test(normalizedRelativePath)) {
-    return null;
-  }
+  const rawRelativePath = String(relativePath || '').trim();
+  if (!rawRelativePath || /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(rawRelativePath)) return null;
 
-  // Strip leading "./" if present
-  let cleanRel = normalizedRelativePath;
-  if (cleanRel.startsWith('./')) {
-    cleanRel = cleanRel.substring(2);
-  }
-
-  // If it starts with "/", it is root-relative
-  if (cleanRel.startsWith('/')) {
-    return cleanRel.substring(1);
-  }
+  const isRootRelative = rawRelativePath.startsWith('/');
+  let cleanRel = normalizeReferencePathValue(rawRelativePath);
+  if (isRootRelative) return cleanRel.replace(/^\/+/, '');
+  if (cleanRel.startsWith('./')) cleanRel = cleanRel.substring(2);
 
   const baseParts = basePath.split('/').filter(Boolean);
   const relParts = cleanRel.split('/');
@@ -117,6 +117,8 @@ function resolveRelativePath(basePath, relativePath) {
 }
 
 function getReferencePathCandidates(hostFilename, refPath) {
+  const rawReference = String(refPath || '').trim();
+  if (!rawReference || /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(rawReference)) return [];
   const { path } = splitPathSuffix(refPath);
   const canonicalPath = resolveRelativePath(getDirectoryPath(hostFilename), path);
   if (!canonicalPath) return [];
@@ -138,6 +140,23 @@ function splitPathSuffix(refPath) {
     path: suffixMatch ? refPath.slice(0, suffixMatch.index) : refPath,
     suffix: suffixMatch ? suffixMatch[0] : ''
   };
+}
+
+function appendReferenceSuffix(resolvedValue, suffixValue) {
+  const resolved = String(resolvedValue || '');
+  const suffix = String(suffixValue || '');
+  if (!suffix) return resolved;
+
+  const hashIndex = suffix.indexOf('#');
+  const query = hashIndex === -1 ? suffix : suffix.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? '' : suffix.slice(hashIndex);
+  if (/^(?:blob|data):/i.test(resolved)) return `${resolved}${hash}`;
+
+  let result = resolved.split('#')[0];
+  if (query.startsWith('?') && query.length > 1) {
+    result += `${result.includes('?') ? '&' : '?'}${query.slice(1)}`;
+  }
+  return `${result}${hash}`;
 }
 
 function getDirectoryPath(filename) {
@@ -244,14 +263,14 @@ function resolveReferenceValue(refPath, fileMap, entryFilename) {
   const { suffix } = splitPathSuffix(refPath);
   for (const candidatePath of getReferencePathCandidates(entryFilename, refPath)) {
     if (fileMap[candidatePath]) {
-      return `${fileMap[candidatePath]}${suffix}`;
+      return appendReferenceSuffix(fileMap[candidatePath], suffix);
     }
   }
   return null;
 }
 
 function resolveSrcset(value, fileMap, entryFilename) {
-  return value.split(',').map(part => {
+  return splitSrcsetCandidates(value).map(part => {
     const trimmed = part.trim();
     if (!trimmed) return part;
     const pieces = trimmed.split(/\s+/);
@@ -262,26 +281,202 @@ function resolveSrcset(value, fileMap, entryFilename) {
   }).join(', ');
 }
 
+function splitSrcsetCandidates(value) {
+  const candidates = [];
+  let current = '';
+  const source = String(value || '');
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1] || '';
+    if (char === ',' && (!/^\s*data:/i.test(current) || /\s/.test(next))) {
+      candidates.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  candidates.push(current);
+  return candidates;
+}
+
 function rewriteCssImportReference(match, quote, refPath, resolved) {
   const safeQuote = quote || '"';
   return match.replace(refPath, resolved).replace(/@import\s+url\(\s*([^'")\s][^)]*)\)/i, `@import url(${safeQuote}$1${safeQuote})`);
 }
 
 function resolveCssUrls(content, fileMap, entryFilename) {
-  let result = content.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, quote, refPath) => {
-    const resolved = resolveReferenceValue(refPath.trim(), fileMap, entryFilename);
-    if (!resolved) return match;
+  return rewriteCssReferences(content, refPath => resolveReferenceValue(refPath, fileMap, entryFilename));
+}
+
+function rewriteCssReferences(content, transform) {
+  const source = String(content || '');
+  let result = '';
+  let index = 0;
+  const copyQuoted = quote => {
+    const start = index;
+    index += 1;
+    while (index < source.length) {
+      if (source[index] === '\\') index += 2;
+      else if (source[index++] === quote) break;
+    }
+    return source.slice(start, index);
+  };
+  const readUrlFunction = () => {
+    const start = index;
+    index += 4; // url(
+    while (index < source.length && /\s/.test(source[index])) index += 1;
+    let quote = '';
+    if (source[index] === '"' || source[index] === "'") quote = source[index++];
+    const valueStart = index;
+    if (quote) {
+      while (index < source.length) {
+        if (source[index] === '\\') index += 2;
+        else if (source[index++] === quote) break;
+      }
+    } else {
+      while (index < source.length && source[index] !== ')') index += 1;
+    }
+    const valueEnd = quote ? index - 1 : index;
+    while (index < source.length && source[index] !== ')') index += 1;
+    if (index < source.length) index += 1;
+    const raw = source.slice(valueStart, valueEnd).trim();
+    const transformed = transform(raw);
+    if (!transformed || transformed === raw) return source.slice(start, index);
     const safeQuote = quote || '"';
-    return `url(${safeQuote}${resolved}${safeQuote})`;
-  });
+    return `url(${safeQuote}${transformed}${safeQuote})`;
+  };
 
-  result = result.replace(/@import\s+(?:url\(\s*)?(['"]?)([^'")\s]+)\1\s*\)?/gi, (match, quote, refPath) => {
-    const resolved = resolveReferenceValue(refPath.trim(), fileMap, entryFilename);
-    if (!resolved) return match;
-    return rewriteCssImportReference(match, quote, refPath, resolved);
-  });
-
+  while (index < source.length) {
+    if (source.startsWith('/*', index)) {
+      const end = source.indexOf('*/', index + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      result += source.slice(index, stop);
+      index = stop;
+      continue;
+    }
+    if (source[index] === '"' || source[index] === "'") {
+      result += copyQuoted(source[index]);
+      continue;
+    }
+    if (source.slice(index, index + 7).toLowerCase() === '@import' && /\s/.test(source[index + 7] || '')) {
+      result += source.slice(index, index + 7);
+      index += 7;
+      while (index < source.length && /\s/.test(source[index])) result += source[index++];
+      if (source[index] === '"' || source[index] === "'") {
+        const quote = source[index++];
+        const valueStart = index;
+        while (index < source.length) {
+          if (source[index] === '\\') index += 2;
+          else if (source[index++] === quote) break;
+        }
+        const raw = source.slice(valueStart, index - 1);
+        const transformed = transform(raw);
+        result += `${quote}${transformed || raw}${quote}`;
+      }
+      continue;
+    }
+    if (source.slice(index, index + 4).toLowerCase() === 'url(') {
+      result += readUrlFunction();
+      continue;
+    }
+    result += source[index++];
+  }
   return result;
+}
+
+function rewriteHtmlReferenceAttributes(content, transform) {
+  const source = String(content || '');
+  const attributeDecoder = document.createElement('textarea');
+  const rewriteTag = tag => tag.replace(
+    /(^|\s)([A-Za-z][\w:-]*)(\s*=\s*)(?:(["'])([\s\S]*?)\4|([^\s"'=<>`]+))/g,
+    (match, prefix, attrName, equals, quote, quotedValue, unquotedValue) => {
+      const lowerName = attrName.toLowerCase();
+      if (!new Set(['href', 'src', 'action', 'poster', 'formaction', 'srcset', 'style']).has(lowerName)) return match;
+      attributeDecoder.innerHTML = quote ? quotedValue : unquotedValue;
+      const original = attributeDecoder.textContent;
+      const next = lowerName === 'style'
+        ? rewriteCssReferences(original, transform)
+        : lowerName === 'srcset'
+        ? resolveSrcsetWithTransform(original, transform)
+        : transform(original, { tagName: tag.match(/^<\s*([\w:-]+)/)?.[1]?.toLowerCase() || '', attrName: lowerName });
+      if (!next || next === original) return match;
+      const outputQuote = quote || '"';
+      const escaped = String(next).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(outputQuote === '"' ? /"/g : /'/g, outputQuote === '"' ? '&quot;' : '&#39;');
+      return `${prefix}${attrName}${equals}${outputQuote}${escaped}${outputQuote}`;
+    }
+  );
+
+  let result = '';
+  let index = 0;
+  while (index < source.length) {
+    const tagStart = source.indexOf('<', index);
+    if (tagStart === -1) {
+      result += source.slice(index);
+      break;
+    }
+    result += source.slice(index, tagStart);
+    if (source.startsWith('<!--', tagStart)) {
+      const end = source.indexOf('-->', tagStart + 4);
+      const stop = end === -1 ? source.length : end + 3;
+      result += source.slice(tagStart, stop);
+      index = stop;
+      continue;
+    }
+    const tagEnd = findHtmlTagEnd(source, tagStart);
+    if (tagEnd === -1) {
+      result += source.slice(tagStart);
+      break;
+    }
+    const tag = source.slice(tagStart, tagEnd + 1);
+    result += /^<\/?[!?]/.test(tag) ? tag : rewriteTag(tag);
+    const nameMatch = tag.match(/^<\s*([A-Za-z][\w:-]*)/);
+    const name = nameMatch?.[1]?.toLowerCase();
+    index = tagEnd + 1;
+
+    // Raw-text elements must never be scanned as HTML.  CSS is handled by its
+    // own tokenizer; script and template text remain byte-for-byte intact.
+    if (name === 'style' && !/^<\//.test(tag)) {
+      const close = source.toLowerCase().indexOf('</style', index);
+      const stop = close === -1 ? source.length : close;
+      result += rewriteCssReferences(source.slice(index, stop), transform);
+      index = stop;
+    } else if ((name === 'script' || name === 'template') && !/^<\//.test(tag)) {
+      const close = source.toLowerCase().indexOf(`</${name}`, index);
+      const stop = close === -1 ? source.length : close;
+      result += source.slice(index, stop);
+      index = stop;
+    }
+  }
+  return result;
+}
+
+function findHtmlTagEnd(source, start) {
+  let quote = '';
+  for (let index = start + 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (char === '\\') index += 1;
+      else if (char === quote) quote = '';
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '>') {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function resolveSrcsetWithTransform(value, transform) {
+  return splitSrcsetCandidates(value).map(part => {
+    const trimmed = part.trim();
+    if (!trimmed) return part;
+    const pieces = trimmed.split(/\s+/);
+    const resolved = transform(pieces[0]);
+    if (!resolved || resolved === pieces[0]) return part;
+    pieces[0] = resolved;
+    return pieces.join(' ');
+  }).join(', ');
 }
 
 function findFileByReference(hostFilename, refPath, allowedExtensions = null) {
@@ -296,85 +491,78 @@ function findFileByReference(hostFilename, refPath, allowedExtensions = null) {
 
 function injectPreviewGuardIntoHtml(htmlContent, guardStyle, guardScript) {
   let result = String(htmlContent || '');
+  const payload = [guardStyle, guardScript].filter(Boolean).join('\n');
+  if (!payload) return result;
   if (/<head\b[^>]*>/i.test(result)) {
-    return result.replace(/<head\b[^>]*>/i, match => `${match}\n${guardStyle}\n${guardScript}`);
+    return result.replace(/<head\b[^>]*>/i, match => `${match}\n${payload}`);
   }
   if (/<html\b[^>]*>/i.test(result)) {
-    return result.replace(/<html\b[^>]*>/i, match => `${match}\n<head>\n${guardStyle}\n${guardScript}\n</head>`);
+    return result.replace(/<html\b[^>]*>/i, match => `${match}\n<head>\n${payload}\n</head>`);
   }
-  return `${guardStyle}\n${guardScript}\n${result}`;
+  // A doctype is a document prologue, not user content to be pushed below
+  // injected nodes.  Insert after it so srcdoc preserves standards mode and
+  // the original source order remains observable by the page.
+  const doctype = result.match(/^\s*<!doctype\b[^>]*>\s*/i);
+  if (doctype) {
+    return `${doctype[0]}${payload}\n${result.slice(doctype[0].length)}`;
+  }
+  return `${payload}\n${result}`;
 }
 
-function applyNonDraggableImageGuard(htmlContent, { preventPreviewFocus = false } = {}) {
-  const guardAttribute = preventPreviewFocus ? 'data-html-viewer-preview-guard' : 'data-html-viewer-image-guard';
-  const focusGuardStyle = preventPreviewFocus
-    ? `html[data-html-viewer-embedded-preview] *,html[data-html-viewer-embedded-preview] *::before,html[data-html-viewer-embedded-preview] *::after{-webkit-user-select:none!important;user-select:none!important;}html[data-html-viewer-embedded-preview] input,html[data-html-viewer-embedded-preview] textarea,html[data-html-viewer-embedded-preview] [contenteditable],html[data-html-viewer-embedded-preview] [role="textbox"]{caret-color:transparent!important;}`
-    : '';
-  const fontSmoothingStyle = `html,body{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;background-color:#ffffff;}`;
-  const guardStyle = `<style ${guardAttribute}>img{-webkit-user-drag:none;user-drag:none;user-select:none;}${fontSmoothingStyle}${focusGuardStyle}</style>`;
-  const focusGuardScript = preventPreviewFocus ? `
-  document.documentElement.setAttribute('data-html-viewer-embedded-preview', '');
-  const isEditableTarget = target => {
-    if (!target || !target.closest) return false;
-    return Boolean(target.closest('input,textarea,select,[contenteditable],[role="textbox"],.monaco-editor'));
-  };
-  const releaseEditableFocus = target => {
-    const editable = target && target.closest ? target.closest('input,textarea,select,[contenteditable],[role="textbox"],.monaco-editor') : null;
-    const active = document.activeElement;
-    if (active && active !== document.body && active !== document.documentElement && isEditableTarget(active)) {
-      active.blur();
-    } else if (editable && editable.blur) {
-      editable.blur();
-    }
-  };
-  document.querySelectorAll('[autofocus]').forEach(element => element.removeAttribute('autofocus'));
-  const originalFocus = HTMLElement.prototype.focus;
-  HTMLElement.prototype.focus = function(...args) {
-    if (isEditableTarget(this)) return;
-    return originalFocus.apply(this, args);
-  };
-  document.addEventListener('pointerdown', event => {
-    if (isEditableTarget(event.target)) {
-      event.preventDefault();
-      releaseEditableFocus(event.target);
-    }
-  }, true);
-  document.addEventListener('focusin', event => {
-    if (isEditableTarget(event.target)) {
-      releaseEditableFocus(event.target);
-    }
-  }, true);
-  document.addEventListener('keydown', event => {
-    if (isEditableTarget(document.activeElement)) {
-      event.preventDefault();
-      event.stopPropagation();
-      releaseEditableFocus(document.activeElement);
-    }
-  }, true);` : '';
-  const guardScript = `<script ${guardAttribute}>
+function createPreviewDiagnosticsBridge(renderToken = '') {
+  const fallbackRenderToken = JSON.stringify(String(renderToken ?? ''));
+  return `<script data-html-viewer-diagnostics>
 (() => {
-  const disableImageDrag = () => {
-    document.querySelectorAll('img').forEach(image => {
-      image.setAttribute('draggable', 'false');
-    });
+  if (window.__htmlViewerDiagnosticsInstalled) return;
+  window.__htmlViewerDiagnosticsInstalled = true;
+  const channel = 'html-viewer-preview-diagnostic';
+  const fallbackRenderToken = ${fallbackRenderToken};
+  const getRenderToken = () => {
+    try { return new URL(location.href).searchParams.get(${JSON.stringify(PROJECT_PREVIEW_VERSION_PARAM)}) || fallbackRenderToken; }
+    catch { return fallbackRenderToken; }
   };
-${focusGuardScript}
-  document.addEventListener('dragstart', event => {
-    if (event.target && event.target.closest && event.target.closest('img')) {
-      event.preventDefault();
+  const text = value => {
+    if (value instanceof Error) return value.stack || value.message;
+    if (typeof value === 'string') return value;
+    try { return JSON.stringify(value); } catch { return String(value); }
+  };
+  const send = (type, message, details = {}) => {
+    try { parent.postMessage({ channel, type, message: text(message), url: location.href, time: Date.now(), renderToken: getRenderToken(), ...details }, '*'); } catch {}
+  };
+  ['error', 'warn'].forEach(level => {
+    const original = console[level];
+    console[level] = function(...args) {
+      send(level === 'error' ? 'error' : 'warning', args.map(text).join(' '), { source: 'console' });
+      return original.apply(this, args);
+    };
+  });
+  addEventListener('error', event => {
+    const target = event.target;
+    if (target && target !== window) {
+      send('resource', 'No se pudo cargar el recurso', { resourceUrl: target.src || target.href || target.currentSrc || '', tag: target.tagName || '' });
+      return;
     }
+    send('error', event.message || 'Error JavaScript', { sourceUrl: event.filename || '', line: event.lineno || 0, column: event.colno || 0, stack: event.error?.stack || '' });
   }, true);
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', disableImageDrag, { once: true });
-  } else {
-    disableImageDrag();
-  }
+  addEventListener('unhandledrejection', event => send('error', event.reason || 'Promesa rechazada sin gestionar', { source: 'promise' }));
+  send('ready', 'preview-runtime-ready');
 })();
+</script>`;
+}
+
+function applyNonDraggableImageGuard(htmlContent, { preventPreviewFocus = false, renderToken = '' } = {}) {
+  void preventPreviewFocus;
+  const guardAttribute = 'data-html-viewer-runtime';
+  const safeRenderToken = JSON.stringify(String(renderToken ?? ''));
+  const guardScript = `${createPreviewDiagnosticsBridge(renderToken)}\n<script ${guardAttribute}>
+ (() => {
+   try { document.documentElement?.setAttribute('data-html-viewer-render-token', ${safeRenderToken}); } catch {}
+ })();
 </script>`;
 
   let result = String(htmlContent || '');
-  if (!result.includes(guardAttribute)) {
-    result = injectPreviewGuardIntoHtml(result, guardStyle, guardScript);
+  if (!new RegExp(`<(?:script|style)\\b[^>]*\\b${guardAttribute}(?:\\s|=|>)`, 'i').test(result)) {
+    result = injectPreviewGuardIntoHtml(result, '', guardScript);
   }
   return result;
 }
@@ -401,25 +589,6 @@ function inlineCssImports(cssContent, hostFilename, dataUrlMap, seenFiles = new 
 // Helper to resolve relative paths in HTML content to Blob URLs
 function resolveVirtualPaths(content, fileMap, entryFilename) {
   if (!entryFilename) entryFilename = 'index.html';
-
-  let result = content.replace(/\b(href|src|action|poster)\s*=\s*(['"])([^'"]+)\2/gi, (match, attr, quote, refPath) => {
-    const resolved = resolveReferenceValue(refPath, fileMap, entryFilename);
-    if (resolved) {
-      return `${attr}=${quote}${resolved}${quote}`;
-    }
-    return match;
-  });
-
-  result = result.replace(/\bsrcset\s*=\s*(['"])([^'"]+)\1/gi, (match, quote, value) => {
-    return `srcset=${quote}${resolveSrcset(value, fileMap, entryFilename)}${quote}`;
-  });
-
-  // Resolve virtual URLs inside inline style="..." attributes
-  result = result.replace(/\bstyle\s*=\s*(['"])([\s\S]*?)\1/gi, (match, quote, styleContent) => {
-    return `style=${quote}${resolveCssUrls(styleContent, fileMap, entryFilename)}${quote}`;
-  });
-
-  return result.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (match, cssContent) => {
-    return match.replace(cssContent, resolveCssUrls(cssContent, fileMap, entryFilename));
-  });
+  const transform = refPath => resolveReferenceValue(refPath, fileMap, entryFilename);
+  return rewriteHtmlReferenceAttributes(content, transform);
 }

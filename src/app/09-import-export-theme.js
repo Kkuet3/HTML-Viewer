@@ -56,13 +56,45 @@ function initModalCloseEvents() {
   }
 }
 
-function loadProjectFiles(newFiles, toastMessage = '', projectName = '') {
+function startImportOperation() {
+  importGeneration += 1;
+  window.cancelPendingRecovery?.();
+  return importGeneration;
+}
+
+function cancelPendingImportOperations() {
+  importGeneration += 1;
+}
+
+// Expose only the cancellation hook used by the editor input handlers.  The
+// operation itself remains internal to this module.
+window.cancelPendingImportOperations = cancelPendingImportOperations;
+
+function beginProjectReplacement(importToken = null) {
+  if (importToken !== null && importToken !== importGeneration) return false;
+  if (importToken === null) importGeneration += 1;
+  window.cancelPendingRecovery?.();
+  projectIdentity += 1;
+  invalidatePreviewLifecycle('project-replacement');
+  previewLifecycle.sessionGeneration += 1;
+  projectPreviewKnownPaths = new Set();
+  projectPreviewSiteRoot = '';
+  projectPreviewNeedsFullSync = true;
+  projectPreviewLastUrl = '';
+  projectPreviewMissingPath = '';
+  projectPreviewNotifiedMissingPath = '';
+  resetProjectPreviewLocation();
+  return true;
+}
+
+function loadProjectFiles(newFiles, toastMessage = '', projectName = '', options = {}) {
   if (newFiles.length === 0) return;
   saveHistoryState();
+  if (!beginProjectReplacement(options.importToken ?? null)) return false;
   const wasRestoring = isRestoringHistory;
   isRestoringHistory = true;
   try {
-    switchEditorMode('split', false);
+    switchEditorMode('split', false, { render: false });
     disposeAllFileModels();
 
     let cleanProjectName = projectName ? projectName.replace(/[\\/:*?"<>|]/g, '_').trim() : '';
@@ -140,11 +172,19 @@ function loadProjectFiles(newFiles, toastMessage = '', projectName = '') {
     isRestoringHistory = wasRestoring;
   }
 
-  allowPreviewFocusOnNextRender();
-  updatePreview();
+  const committedEntry = getEntryFile();
+  updatePreview({
+    force: true,
+    full: true,
+    forceNavigation: true,
+    reason: 'project-replacement',
+    targetPath: committedEntry?.name || ''
+  });
+  window.scheduleRecoverySave?.();
   if (toastMessage) {
     showToast(toastMessage);
   }
+  return true;
 }
 
 function addFilesToProject(newFiles, targetPath = '') {
@@ -188,16 +228,17 @@ function addFilesToProject(newFiles, targetPath = '') {
   }
   renderFileExplorer();
   renderActiveFileSummary();
-  allowPreviewFocusOnNextRender();
   updatePreview();
+  window.scheduleRecoverySave?.();
 }
 
 async function compileToUnifiedHTML() {
-  const entryFile = getEntryFile();
+  const revision = captureExportRevision();
+  const entryFile = revision.files.find(file => file.id === revision.entryId) || revision.files.find(isHtmlFile);
   if (!entryFile) return '';
 
-  const dataUrlMap = await createVirtualFileDataUrlSnapshot();
-  return resolveVirtualPaths(getFileText(entryFile), dataUrlMap, entryFile.name);
+  const dataUrlMap = await createVirtualFileDataUrlSnapshot(revision.files);
+  return resolveVirtualPaths(entryFile.content || '', dataUrlMap, entryFile.name);
 }
 
 let jszipLoadingPromise = null;
@@ -208,9 +249,9 @@ function ensureJSZip() {
   if (jszipLoadingPromise) {
     return jszipLoadingPromise;
   }
-  jszipLoadingPromise = new Promise((resolve, reject) => {
+  const loadAttempt = new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = 'jszip.min.js';
+    script.src = new URL('jszip.min.js', APP_ROOT_URL).href;
     script.onload = () => {
       if (typeof window.JSZip === 'function') {
         resolve(window.JSZip);
@@ -219,7 +260,6 @@ function ensureJSZip() {
       }
     };
     script.onerror = () => {
-      // CDN Fallback
       const cdnScript = document.createElement('script');
       cdnScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
       cdnScript.onload = () => {
@@ -234,15 +274,21 @@ function ensureJSZip() {
     };
     document.head.appendChild(script);
   });
+  jszipLoadingPromise = loadAttempt.catch(error => {
+    // A transient local/CDN failure must not poison every later import.
+    jszipLoadingPromise = null;
+    throw error;
+  });
   return jszipLoadingPromise;
 }
 
 async function exportToZip() {
+  const revision = captureExportRevision();
   let JSZipCtor;
   try {
     JSZipCtor = await ensureJSZip();
   } catch (err) {
-    showToast(t('toast_jszip_not_loaded'), 'error');
+    if (token === importGeneration) showToast(t('toast_jszip_not_loaded'), 'error');
     return;
   }
 
@@ -252,11 +298,11 @@ async function exportToZip() {
 
   const zip = new JSZipCtor();
 
-  files.forEach(file => {
+  revision.files.forEach(file => {
     if (file.isFolder) {
       zip.folder(file.name);
     } else {
-      zip.file(file.name, getFileBlob(file));
+      zip.file(file.name, getRevisionFileBlob(file));
     }
   });
 
@@ -328,13 +374,19 @@ async function exportToFolder() {
   }
 }
 
-async function importSingleHtmlFile(file) {
+async function importSingleHtmlFile(file, operationToken = null) {
+  const token = operationToken ?? startImportOperation();
   try {
     const html = await file.text();
-    if (!editor) return false;
+    if (token !== importGeneration || !editor) return false;
 
-    allowPreviewFocusOnNextRender();
-    setEditorValue(html);
+    if (!beginProjectReplacement(token)) return false;
+    importCommitInProgress = true;
+    try {
+      setEditorValue(html);
+    } finally {
+      importCommitInProgress = false;
+    }
 
     let name = file.name;
     if (name.toLowerCase().endsWith('.html')) {
@@ -350,13 +402,16 @@ async function importSingleHtmlFile(file) {
     showToast(t('toast_html_imported', { name: file.name }));
     return true;
   } catch (err) {
-    void err;
-    showToast(t('toast_html_read_error'), 'error');
+    if (token === importGeneration) {
+      void err;
+      showToast(t('toast_html_read_error'), 'error');
+    }
     return false;
   }
 }
 
-async function importFromZip(zipFile) {
+async function importFromZip(zipFile, operationToken = null) {
+  const token = operationToken ?? startImportOperation();
   let JSZipCtor;
   try {
     JSZipCtor = await ensureJSZip();
@@ -367,37 +422,31 @@ async function importFromZip(zipFile) {
 
   try {
     const zip = await JSZipCtor.loadAsync(zipFile);
+    const entries = [];
+    zip.forEach((relativePath, zipEntry) => {
+      if (isIgnorableImportedPath(zipEntry.name)) return;
+      entries.push({ relativePath, zipEntry });
+    });
     const newFiles = [];
     let fileCounter = 0;
-
-    const promises = [];
-    zip.forEach((relativePath, zipEntry) => {
-      if (zipEntry.name.startsWith('__MACOSX/') || zipEntry.name.includes('/.') || zipEntry.name.startsWith('.')) {
-        return;
-      }
-
+    for (const { relativePath, zipEntry } of entries) {
+      if (token !== importGeneration) return false;
       if (zipEntry.dir) {
-        newFiles.push({
-          ...createFolderRecord(relativePath.endsWith('/') ? relativePath : relativePath + '/', {
-            id: createFileId('folder'),
-            order: nextFileOrder + fileCounter++
-          })
-        });
-        return;
+        newFiles.push(createFolderRecord(relativePath.endsWith('/') ? relativePath : relativePath + '/', {
+          id: createFileId('folder'),
+          order: nextFileOrder + fileCounter++
+        }));
+        continue;
       }
 
       const fileId = createFileId('file');
       const order = nextFileOrder + fileCounter++;
-      const promise = (isTextFilename(relativePath) ? zipEntry.async('string') : zipEntry.async('blob')).then(content => {
-        const record = isTextFilename(relativePath)
-          ? createTextFileRecord(relativePath, content, { id: fileId, order })
-          : createBinaryFileRecord(relativePath, content, { id: fileId, order, mimeType: getMimeTypeForFilename(relativePath) });
-        newFiles.push(record);
-      });
-      promises.push(promise);
-    });
-
-    await Promise.all(promises);
+      const content = await (isTextFilename(relativePath) ? zipEntry.async('string') : zipEntry.async('blob'));
+      newFiles.push(isTextFilename(relativePath)
+        ? createTextFileRecord(relativePath, content, { id: fileId, order })
+        : createBinaryFileRecord(relativePath, content, { id: fileId, order, mimeType: getMimeTypeForFilename(relativePath) }));
+      if (fileCounter % 24 === 0) await yieldToMainThread();
+    }
 
     if (newFiles.length === 0) {
       showToast(t('toast_zip_no_valid_files'), 'error');
@@ -405,13 +454,30 @@ async function importFromZip(zipFile) {
     }
 
     const zipName = zipFile.name.replace(/\.zip$/i, '');
-    loadProjectFiles(newFiles, t('toast_folder_imported', { count: newFiles.length }), zipName);
-    return true;
+    if (token !== importGeneration) return false;
+    return loadProjectFiles(
+      newFiles,
+      t('toast_folder_imported', { count: newFiles.length }),
+      zipName,
+      { importToken: token }
+    );
   } catch (err) {
-    void err;
-    showToast(t('toast_zip_import_error'), 'error');
+    if (token === importGeneration) {
+      void err;
+      showToast(t('toast_zip_import_error'), 'error');
+    }
     return false;
   }
+}
+
+function isIgnorableImportedPath(pathValue) {
+  const normalized = String(pathValue || '').replace(/\\/g, '/');
+  const basename = normalized.split('/').filter(Boolean).pop() || '';
+  return normalized.startsWith('__MACOSX/') ||
+    basename === '.DS_Store' ||
+    basename === 'Thumbs.db' ||
+    basename === 'desktop.ini' ||
+    normalized.includes('/__MACOSX/');
 }
 
 async function createRecordsFromDataTransfer(dataTransfer, targetPath = '') {
@@ -421,13 +487,14 @@ async function createRecordsFromDataTransfer(dataTransfer, targetPath = '') {
   if (items.length > 0 && items.some(item => typeof item.webkitGetAsEntry === 'function')) {
     for (const item of items) {
       const entry = item.webkitGetAsEntry?.();
-      if (!entry || entry.name?.startsWith('.')) continue;
+      if (!entry || isIgnorableImportedPath(entry.name)) continue;
 
       if (entry.isDirectory) {
         const entries = await readDirectoryEntryEntries(entry);
         records.push(createFolderRecord(joinProjectPath(targetPath, entry.name, { folder: true })));
         for (const nestedEntry of entries) {
           const nestedPath = joinProjectPath(joinProjectPath(targetPath, entry.name, { folder: true }), nestedEntry.relativePath, { folder: nestedEntry.isDirectory });
+          if (isIgnorableImportedPath(nestedPath)) continue;
           if (nestedEntry.isDirectory) {
             records.push(createFolderRecord(nestedPath));
           } else {
@@ -439,7 +506,7 @@ async function createRecordsFromDataTransfer(dataTransfer, targetPath = '') {
         }
       } else if (entry.isFile) {
         const browserFile = item.getAsFile?.();
-        if (browserFile && !browserFile.name.startsWith('.')) {
+        if (browserFile && !isIgnorableImportedPath(browserFile.name)) {
           records.push(await createRecordFromBrowserFile(browserFile, targetPath));
         }
       }
@@ -448,7 +515,7 @@ async function createRecordsFromDataTransfer(dataTransfer, targetPath = '') {
   }
 
   for (const file of Array.from(dataTransfer.files || [])) {
-    if (file.name.startsWith('.')) continue;
+    if (isIgnorableImportedPath(file.name)) continue;
     records.push(await createRecordFromBrowserFile(file, targetPath));
   }
   return records;
@@ -580,17 +647,48 @@ function finishExternalFileDrag({ keepExplorerOpen = false } = {}) {
   explorerOpenedTemporarilyForDrag = false;
 }
 
-async function addDroppedFilesToProject(dataTransfer, targetPath = '') {
-  const records = await createRecordsFromDataTransfer(dataTransfer, targetPath);
-  if (records.length === 0) {
-    showToast(t('toast_no_valid_import'), 'error');
+async function addDroppedFilesToProject(dataTransfer, targetPath = '', operationToken = null) {
+  const token = operationToken ?? startImportOperation();
+  const identityAtStart = projectIdentity;
+  try {
+    const records = await createRecordsFromDataTransfer(dataTransfer, targetPath);
+    if (token !== importGeneration || identityAtStart !== projectIdentity) return 0;
+    if (records.length === 0) {
+      showToast(t('toast_no_valid_import'), 'error');
+      return 0;
+    }
+    // createRecordsFromDataTransfer already materializes the requested target
+    // path (including nested directory entries). Do not prepend it a second
+    // time when committing the batch.
+    addFilesToProject(records, '');
+    return records.length;
+  } catch (error) {
+    if (token === importGeneration && identityAtStart === projectIdentity) {
+      console.error('Error añadiendo archivos soltados', error);
+      showToast(t('toast_no_valid_import'), 'error');
+    }
     return 0;
   }
-  addFilesToProject(records, '');
-  return records.length;
+}
+
+function snapshotDataTransfer(dataTransfer) {
+  const rawItems = Array.from(dataTransfer?.items || []);
+  return {
+    items: rawItems.map(item => {
+      const entry = item.webkitGetAsEntry?.() || null;
+      const file = item.getAsFile?.() || null;
+      return {
+        kind: item.kind,
+        webkitGetAsEntry: () => entry,
+        getAsFile: () => file
+      };
+    }),
+    files: Array.from(dataTransfer?.files || [])
+  };
 }
 
 async function importDroppedFilesGlobally(dataTransfer) {
+  const token = startImportOperation();
   const items = Array.from(dataTransfer.items || []).filter(item => item.kind === 'file');
   const filesToDrop = Array.from(dataTransfer.files || []);
   const itemCount = Math.max(items.length, filesToDrop.length);
@@ -601,14 +699,20 @@ async function importDroppedFilesGlobally(dataTransfer) {
       showToast(t('toast_no_valid_import'), 'error');
       return { imported: false, project: false };
     }
-    loadProjectFiles(records, t('toast_folder_imported', { count: records.length }), t('imported_project_name'));
-    return { imported: true, project: true };
+    if (token !== importGeneration) return { imported: false, project: false };
+    const imported = loadProjectFiles(
+      records,
+      t('toast_folder_imported', { count: records.length }),
+      t('imported_project_name'),
+      { importToken: token }
+    );
+    return { imported: imported, project: Boolean(imported) };
   }
 
   const item = items[0];
   const entry = item?.webkitGetAsEntry?.();
   if (entry?.isDirectory) {
-    const imported = await importFolderEntry(entry);
+    const imported = await importFolderEntry(entry, token);
     return { imported, project: imported };
   }
 
@@ -616,15 +720,15 @@ async function importDroppedFilesGlobally(dataTransfer) {
   if (!file) return { imported: false, project: false };
   const ext = getFileExtension(file.name);
   if (ext === 'zip') {
-    const imported = await importFromZip(file);
+    const imported = await importFromZip(file, token);
     return { imported, project: imported };
   }
   if (ext === 'html' || ext === 'htm') {
-    const imported = await importSingleHtmlFile(file);
+    const imported = await importSingleHtmlFile(file, token);
     return { imported, project: false };
   }
 
-  const added = await addDroppedFilesToProject(dataTransfer, '');
+  const added = await addDroppedFilesToProject(dataTransfer, '', token);
   if (added > 0) {
     const msgKey = added === 1 ? 'toast_file_added_to_project' : 'toast_files_added_to_project';
     showToast(`${added} ${t(msgKey)}`);
@@ -668,9 +772,16 @@ function initDragAndDrop() {
     event.preventDefault();
     if (isInternalAppDrag(event) || event.target.closest?.('#file-explorer')) return;
 
+    const payload = snapshotDataTransfer(event.dataTransfer);
     showDragDropLoading(currentLocale === 'es' ? 'Importando archivos...' : 'Importing files...');
-    const result = await importDroppedFilesGlobally(event.dataTransfer);
-    finishExternalFileDrag({ keepExplorerOpen: result.project });
+    try {
+      const result = await importDroppedFilesGlobally(payload);
+      finishExternalFileDrag({ keepExplorerOpen: result.project });
+    } catch (error) {
+      console.error('Error importando archivos soltados', error);
+      showToast(t('toast_no_valid_import'), 'error');
+      finishExternalFileDrag();
+    }
   });
 
   window.addEventListener('blur', () => {
@@ -694,7 +805,7 @@ function readDirectoryEntryEntries(dirEntry, path = '') {
           resolve(fileEntries);
         } else {
           for (const entry of entries) {
-            if (entry.name.startsWith('.')) continue; // ignore system/hidden files
+            if (isIgnorableImportedPath(entry.name)) continue;
 
             const relativePath = path + entry.name;
             if (entry.isFile) {
@@ -718,7 +829,8 @@ function readDirectoryEntryEntries(dirEntry, path = '') {
   });
 }
 
-async function importFolderEntry(directoryEntry) {
+async function importFolderEntry(directoryEntry, operationToken = null) {
+  const token = operationToken ?? startImportOperation();
   try {
     const fileEntries = await readDirectoryEntryEntries(directoryEntry);
     const newFiles = [];
@@ -744,11 +856,18 @@ async function importFolderEntry(directoryEntry) {
     }
 
     const folderName = directoryEntry.name;
-    loadProjectFiles(newFiles, t('toast_folder_imported', { count: newFiles.length }), folderName);
-    return true;
+    if (token !== importGeneration) return false;
+    return loadProjectFiles(
+      newFiles,
+      t('toast_folder_imported', { count: newFiles.length }),
+      folderName,
+      { importToken: token }
+    );
   } catch (err) {
-    void err;
-    showToast(t('toast_folder_import_error'), 'error');
+    if (token === importGeneration) {
+      void err;
+      showToast(t('toast_folder_import_error'), 'error');
+    }
     return false;
   }
 }
@@ -813,7 +932,7 @@ document.getElementById('btn-theme').addEventListener('click', () => {
   const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
 
   htmlEl.setAttribute('data-theme', newTheme);
-  localStorage.setItem('theme', newTheme);
+  writeStoredValue('theme', newTheme);
 
   // Update UI Text
   const themeLabel = document.querySelector('#btn-theme span');

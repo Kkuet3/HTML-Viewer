@@ -15,6 +15,10 @@ const requiredRuntimeAssets = [
   'assets/fonts/OFL-Inter.txt',
   'assets/fonts/OFL-Outfit.txt',
   'assets/fonts/OFL-JetBrains-Mono.txt',
+  'assets/licenses/Lucide.txt',
+  'assets/licenses/JSZip.txt',
+  'assets/licenses/Pako.txt',
+  'assets/licenses/Pako-zlib.txt',
 ];
 
 for (const file of requiredRuntimeAssets) {

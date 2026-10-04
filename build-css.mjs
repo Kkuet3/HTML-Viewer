@@ -9,7 +9,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 
 const TARGETS = [
   { src: 'styles.css', out: 'styles.min.css' },
-  { src: 'seo-pages.css', out: 'seo-pages.min.css' },
+  { src: 'layout.css', out: 'layout.min.css' },
 ];
 
 // Safe CSS minifier. State machine over the source so we only collapse
@@ -81,14 +81,12 @@ function minifyCss(css) {
     i++;
   }
 
-  // Drop the redundant final semicolon before each closing brace.
-  out = out.replace(/;}/g, '}');
   return out.trim();
 }
 
 let total = 0;
 for (const { src, out } of TARGETS) {
-  const css = await readFile(src, 'utf8');
+  let css = await readFile(src, 'utf8');
   const min = minifyCss(css);
   // Sanity: balanced braces — a mangled minify would skew this.
   const open = (min.match(/{/g) || []).length;
@@ -106,3 +104,18 @@ for (const { src, out } of TARGETS) {
   );
 }
 console.log(`CSS total saved: ${(total / 1024).toFixed(1)} KB.`);
+
+// The application shell intentionally inlines layout.css to avoid a second
+// render-blocking request. Keep that copy generated from the same source.
+const layoutCss = minifyCss(await readFile('layout.css', 'utf8'));
+for (const indexPath of ['index.html', 'es/index.html']) {
+const indexHtml = await readFile(indexPath, 'utf8');
+const marker = '/* Minified layout.css inlined */';
+const markerIndex = indexHtml.indexOf(marker);
+const styleEnd = markerIndex === -1 ? -1 : indexHtml.indexOf('</style>', markerIndex);
+if (markerIndex !== -1 && styleEnd !== -1) {
+  const replacement = `${marker}\n    ${layoutCss}\n  `;
+  const nextIndexHtml = `${indexHtml.slice(0, markerIndex)}${replacement}${indexHtml.slice(styleEnd)}`;
+  if (nextIndexHtml !== indexHtml) await writeFile(indexPath, nextIndexHtml, 'utf8');
+}
+}

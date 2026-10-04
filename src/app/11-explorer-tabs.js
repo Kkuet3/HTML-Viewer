@@ -103,55 +103,46 @@ function getFileByPath(path) {
   return files.find(file => file.name === cleanPath);
 }
 
-function rewriteReferenceValue(refPath, hostFilename, oldPath, newPath) {
+function rewriteReferenceValue(refPath, hostFilename, oldPath, newPath, newHostFilename = hostFilename) {
   const { suffix } = splitPathSuffix(refPath);
-  const cleanOldPath = normalizeProjectPath(oldPath).toLowerCase();
+  const cleanOldPath = normalizeProjectPath(oldPath);
   const matchedPath = getReferencePathCandidates(hostFilename, refPath)
-    .find(candidatePath => candidatePath.toLowerCase() === cleanOldPath);
+    .find(candidatePath => candidatePath === cleanOldPath);
   if (!matchedPath) return refPath;
-  return `${makeRelativePath(hostFilename, newPath)}${suffix}`;
+  return `${makeRelativePath(newHostFilename, newPath)}${suffix}`;
 }
 
-function rewriteReferencesInContent(content, hostFilename, oldPath, newPath) {
-  let changed = false;
+function rewriteReferencesInContent(content, hostFilename, oldPath, newPath, newHostFilename = hostFilename) {
+  const transform = refPath => rewriteReferenceValue(refPath, hostFilename, oldPath, newPath, newHostFilename);
+  const extension = getFileExtension(hostFilename);
+  const result = extension === 'css'
+    ? rewriteCssReferences(content, transform)
+    : ((extension === 'html' || extension === 'htm' || !extension)
+      ? rewriteHtmlReferenceAttributes(content, transform)
+      : content);
+  return { content: result, changed: result !== content };
+}
 
-  let result = content.replace(/\b(href|src|action|poster)\s*=\s*(['"])([^'"]+)\2/gi, (match, attr, quote, refPath) => {
-    const rewritten = rewriteReferenceValue(refPath, hostFilename, oldPath, newPath);
-    if (rewritten === refPath) return match;
-    changed = true;
-    return `${attr}=${quote}${rewritten}${quote}`;
-  });
-
-  result = result.replace(/\bsrcset\s*=\s*(['"])([^'"]+)\1/gi, (match, quote, value) => {
-    const rewritten = value.split(',').map(part => {
-      const trimmed = part.trim();
-      if (!trimmed) return part;
-      const pieces = trimmed.split(/\s+/);
-      const newRef = rewriteReferenceValue(pieces[0], hostFilename, oldPath, newPath);
-      if (newRef === pieces[0]) return part;
-      changed = true;
-      pieces[0] = newRef;
-      return pieces.join(' ');
-    }).join(', ');
-    return `srcset=${quote}${rewritten}${quote}`;
-  });
-
-  result = result.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, quote, refPath) => {
-    const rewritten = rewriteReferenceValue(refPath.trim(), hostFilename, oldPath, newPath);
-    if (rewritten === refPath.trim()) return match;
-    changed = true;
-    const safeQuote = quote || '"';
-    return `url(${safeQuote}${rewritten}${safeQuote})`;
-  });
-
-  result = result.replace(/@import\s+(?:url\(\s*)?(['"])([^'"]+)\1\s*\)?/gi, (match, quote, refPath) => {
-    const rewritten = rewriteReferenceValue(refPath.trim(), hostFilename, oldPath, newPath);
-    if (rewritten === refPath.trim()) return match;
-    changed = true;
-    return `@import ${quote}${rewritten}${quote}`;
-  });
-
-  return { content: result, changed };
+function rewriteReferencesForHostMove(content, oldHostFilename, newHostFilename, pathChanges) {
+  const knownPaths = new Set([
+    ...files.filter(file => !file.isFolder).map(file => normalizeProjectPath(file.name)),
+    ...pathChanges.flatMap(change => [normalizeProjectPath(change.oldPath), normalizeProjectPath(change.newPath)])
+  ]);
+  const transform = refPath => {
+    const raw = String(refPath || '').trim();
+    if (!raw || raw.startsWith('/') || /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(raw)) return refPath;
+    const { path, suffix } = splitPathSuffix(raw);
+    const candidate = getReferencePathCandidates(oldHostFilename, path)
+      .find(item => knownPaths.has(normalizeProjectPath(item)));
+    if (!candidate) return refPath;
+    return `${makeRelativePath(newHostFilename, candidate)}${suffix}`;
+  };
+  const extension = getFileExtension(oldHostFilename);
+  if (extension === 'css') return rewriteCssReferences(content, transform);
+  if (extension === 'html' || extension === 'htm' || !extension) {
+    return rewriteHtmlReferenceAttributes(content, transform);
+  }
+  return content;
 }
 
 function applyPathReferenceChanges(pathChanges) {
@@ -159,16 +150,25 @@ function applyPathReferenceChanges(pathChanges) {
   const wasRestoring = isRestoringHistory;
   isRestoringHistory = true;
   try {
+    const oldHostByNewPath = new Map(pathChanges.map(change => [change.newPath, change.oldPath]));
     files.forEach(file => {
       if (!isEditableFile(file)) return;
-      let content = getFileText(file);
+      const originalContent = getFileText(file);
+      const oldHostFilename = oldHostByNewPath.get(file.name) || file.name;
+      const newHostFilename = file.name;
+      let content = originalContent;
       let changed = false;
 
       pathChanges.forEach(({ oldPath, newPath }) => {
-        const result = rewriteReferencesInContent(content, file.name, oldPath, newPath);
+        const result = rewriteReferencesInContent(content, oldHostFilename, oldPath, newPath, newHostFilename);
         content = result.content;
         changed = changed || result.changed;
       });
+      if (oldHostFilename !== newHostFilename) {
+        const movedResult = rewriteReferencesForHostMove(content, oldHostFilename, newHostFilename, pathChanges);
+        changed = changed || movedResult !== content;
+        content = movedResult;
+      }
 
       if (changed) {
         file.content = content;
@@ -215,6 +215,7 @@ function moveVfsItemToFolder(source, targetFolderPath = '') {
   }
 
   let pathChanges = [];
+  saveHistoryState();
 
   if (source.kind === 'file') {
     const file = files.find(item => item.id === source.id);
@@ -274,6 +275,7 @@ function moveVfsItemToFolder(source, targetFolderPath = '') {
   updateFileNameExtension();
   updateEditorPlaceholder();
   updatePreview();
+  window.scheduleRecoverySave?.();
   if (updatedRefs > 0) {
     showToast(`${updatedRefs} archivo(s) actualizados con rutas nuevas`, 'info');
   }
@@ -464,7 +466,7 @@ function renderActiveFileSummary() {
     summary.title = t('choose_file_selector_title');
     summary.setAttribute('aria-label', t('choose_file'));
   } else {
-    name.textContent = file.name.split('/').pop();
+    name.textContent = file.name;
     summary.title = file.name;
     summary.setAttribute('aria-label', t('change_file_aria', { name: file.name }));
   }
@@ -510,9 +512,15 @@ function renderFileExplorer() {
     }
 
     if (typeof showDragDropLoading === 'function') showDragDropLoading(currentLocale === 'es' ? 'Añadiendo archivos...' : 'Adding files...');
-    const addedCount = await addDroppedFilesToProject(e.dataTransfer, '');
-    finishExternalFileDrag({ keepExplorerOpen: addedCount > 0 });
-    if (addedCount > 0) showToast(t('toast_files_added_to_root', { count: addedCount }));
+    try {
+      const addedCount = await addDroppedFilesToProject(snapshotDataTransfer(e.dataTransfer), '');
+      finishExternalFileDrag({ keepExplorerOpen: addedCount > 0 });
+      if (addedCount > 0) showToast(t('toast_files_added_to_root', { count: addedCount }));
+    } catch (error) {
+      console.error('Error añadiendo archivos soltados', error);
+      finishExternalFileDrag();
+      showToast(t('toast_no_valid_import'), 'error');
+    }
   };
 
   const tree = buildFileTree(files);
@@ -662,8 +670,15 @@ function renderTreeChildren(parentNode, container, depth) {
 
         if (position === 'inside') collapsedFolders.delete(node.path);
         if (typeof showDragDropLoading === 'function') showDragDropLoading(currentLocale === 'es' ? 'Añadiendo archivos...' : 'Adding files...');
-        const addedCount = await addDroppedFilesToProject(e.dataTransfer, targetFolder);
-        finishExternalFileDrag({ keepExplorerOpen: addedCount > 0 });
+        let addedCount = 0;
+        try {
+          addedCount = await addDroppedFilesToProject(snapshotDataTransfer(e.dataTransfer), targetFolder);
+          finishExternalFileDrag({ keepExplorerOpen: addedCount > 0 });
+        } catch (error) {
+          console.error('Error añadiendo archivos a la carpeta', error);
+          finishExternalFileDrag();
+          showToast(t('toast_no_valid_import'), 'error');
+        }
         if (addedCount > 0) {
           const rootFolder = getProjectRootFolder();
           if (targetFolder === rootFolder) {
@@ -832,7 +847,7 @@ function renderTreeChildren(parentNode, container, depth) {
 
         const parentPath = getParentPath(file.name);
         if (typeof showDragDropLoading === 'function') showDragDropLoading(currentLocale === 'es' ? 'Añadiendo archivos...' : 'Adding files...');
-        const addedCount = await addDroppedFilesToProject(e.dataTransfer, parentPath);
+        const addedCount = await addDroppedFilesToProject(snapshotDataTransfer(e.dataTransfer), parentPath);
         finishExternalFileDrag({ keepExplorerOpen: addedCount > 0 });
         if (addedCount > 0) {
           const rootFolder = getProjectRootFolder();
@@ -893,6 +908,7 @@ function createNewFolder(parentPath = '') {
       renameFolderInline(node, folderElement);
     }
   }
+  window.scheduleRecoverySave?.();
 }
 
 // Rename folder inline
@@ -966,6 +982,7 @@ function renameFolderInline(node, folderElement) {
         updateFileNameExtension();
         updateEditorPlaceholder();
         updatePreview();
+        window.scheduleRecoverySave?.();
       }
     } else {
       infoDiv.replaceChild(nameSpan, input);
@@ -1044,6 +1061,7 @@ function deleteFolder(folderPath) {
   updateFileNameExtension();
   updateEditorPlaceholder();
   updatePreview();
+  window.scheduleRecoverySave?.();
 }
 
 // Create a new virtual file
@@ -1081,6 +1099,7 @@ function createNewFile(parentPath = '') {
   if (itemElement) {
     renameFileInline(fileId, itemElement);
   }
+  window.scheduleRecoverySave?.();
 }
 
 // Delete a virtual file
@@ -1118,6 +1137,7 @@ function deleteFile(fileId) {
   updateFileNameExtension();
   updateEditorPlaceholder();
   updatePreview();
+  window.scheduleRecoverySave?.();
 }
 
 // Inline Rename helper for files
@@ -1184,6 +1204,7 @@ function renameFileInline(fileId, itemElement) {
         updateFileNameExtension();
         updateEditorPlaceholder();
         updatePreview();
+        window.scheduleRecoverySave?.();
       }
     } else {
       infoDiv.replaceChild(nameSpan, input);

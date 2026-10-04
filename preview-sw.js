@@ -1,12 +1,165 @@
 const PROJECT_MARKER = '/__html_viewer_project__/';
 const sessions = new Map();
+const projectClientSessions = new Map();
+const persistentSessionLoads = new Map();
+const sessionUpdateQueues = new Map();
+const sessionPersistenceStates = new Map();
+const PROJECT_SESSION_DB = 'html-viewer-preview-sessions';
+const PROJECT_SESSION_STORE = 'sessions';
+const PROJECT_SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+let lastPersistentSessionPrune = 0;
+
+function openProjectSessionDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(PROJECT_SESSION_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(PROJECT_SESSION_STORE)) {
+        request.result.createObjectStore(PROJECT_SESSION_STORE, { keyPath: 'sessionId' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('No se pudo abrir la base de datos de la previsualización'));
+  });
+}
+
+async function readPersistentSession(sessionId) {
+  const database = await openProjectSessionDatabase();
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = database.transaction(PROJECT_SESSION_STORE, 'readonly');
+      const request = transaction.objectStore(PROJECT_SESSION_STORE).get(sessionId);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error('No se pudo restaurar la previsualización'));
+    });
+  } finally {
+    database.close();
+  }
+}
+
+async function writePersistentSession(sessionId, session) {
+  const database = await openProjectSessionDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(PROJECT_SESSION_STORE, 'readwrite');
+      transaction.objectStore(PROJECT_SESSION_STORE).put({
+        sessionId,
+        siteRoot: session.siteRoot,
+        version: session.version,
+        updatedAt: session.updatedAt,
+        files: Array.from(session.files.values())
+      });
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error('No se pudo guardar la previsualización'));
+      transaction.onabort = () => reject(transaction.error || new Error('Se canceló el guardado de la previsualización'));
+    });
+  } finally {
+    database.close();
+  }
+}
+
+function schedulePersistentSessionWrite(sessionId) {
+  const existing = sessionPersistenceStates.get(sessionId);
+  if (existing) {
+    existing.dirty = true;
+    return existing.promise;
+  }
+
+  const state = { dirty: true, promise: null };
+  state.promise = (async () => {
+    // Let updates that were queued in the same editing burst converge before
+    // cloning binary payloads into IndexedDB.
+    await new Promise(resolve => setTimeout(resolve, 40));
+    while (state.dirty) {
+      state.dirty = false;
+      const session = sessions.get(sessionId);
+      if (session) await writePersistentSession(sessionId, session).catch(() => {});
+      if (state.dirty) await new Promise(resolve => setTimeout(resolve, 40));
+    }
+  })().finally(() => {
+    if (sessionPersistenceStates.get(sessionId) === state) {
+      sessionPersistenceStates.delete(sessionId);
+    }
+  });
+  sessionPersistenceStates.set(sessionId, state);
+  return state.promise;
+}
+
+async function prunePersistentSessions(now = Date.now()) {
+  if (now - lastPersistentSessionPrune < 5 * 60 * 1000) return;
+  lastPersistentSessionPrune = now;
+  const database = await openProjectSessionDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(PROJECT_SESSION_STORE, 'readwrite');
+      const request = transaction.objectStore(PROJECT_SESSION_STORE).openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const updatedAt = Number(cursor.value?.updatedAt) || 0;
+        if (now - updatedAt > PROJECT_SESSION_MAX_AGE_MS) {
+          cursor.delete();
+        }
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error || new Error('No se pudieron limpiar las sesiones antiguas'));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error('No se pudieron limpiar las sesiones antiguas'));
+      transaction.onabort = () => reject(transaction.error || new Error('Se canceló la limpieza de sesiones'));
+    });
+  } finally {
+    database.close();
+  }
+}
+
+function hydrateSession(record) {
+  if (!record) return null;
+  if (Date.now() - (Number(record.updatedAt) || 0) > PROJECT_SESSION_MAX_AGE_MS) return null;
+  const session = {
+    files: new Map(),
+    pathIndex: new Map(),
+    siteRoot: normalizePath(record.siteRoot || ''),
+    version: Number(record.version) || 0,
+    updatedAt: Number(record.updatedAt) || Date.now()
+  };
+  for (const file of record.files || []) {
+    const path = normalizePath(file?.path);
+    if (!path) continue;
+    const storedFile = { ...file, path };
+    session.files.set(path, storedFile);
+    session.pathIndex.set(path.toLowerCase(), path);
+  }
+  return session;
+}
+
+async function restoreSession(sessionId) {
+  if (sessions.has(sessionId)) return sessions.get(sessionId);
+  if (persistentSessionLoads.has(sessionId)) return persistentSessionLoads.get(sessionId);
+
+  const pending = readPersistentSession(sessionId)
+    .then(hydrateSession)
+    .catch(() => null)
+    .then(session => {
+      if (session) sessions.set(sessionId, session);
+      return session;
+    })
+    .finally(() => persistentSessionLoads.delete(sessionId));
+  persistentSessionLoads.set(sessionId, pending);
+  return pending;
+}
+
+async function getOrRestoreSession(sessionId) {
+  return sessions.get(sessionId) || await restoreSession(sessionId);
+}
 
 self.addEventListener('install', event => {
   self.skipWaiting();
 });
 
 self.addEventListener('activate', event => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(Promise.all([
+    self.clients.claim(),
+    prunePersistentSessions().catch(() => {})
+  ]));
 });
 
 function normalizePath(path) {
@@ -36,7 +189,19 @@ function getProjectUrl(sessionId, path, baseUrl) {
     .filter(Boolean)
     .map(segment => encodeURIComponent(segment))
     .join('/');
-  return new URL(`/${PROJECT_MARKER.slice(1)}${encodeURIComponent(sessionId)}/${encodedPath}`, baseUrl).href;
+  const base = new URL(baseUrl);
+  const scope = new URL(self.registration.scope);
+  const markerIndex = base.pathname.indexOf(PROJECT_MARKER);
+  const scopeMarkerIndex = scope.pathname.indexOf(PROJECT_MARKER);
+  const rawAppBasePath = markerIndex >= 0
+    ? base.pathname.slice(0, markerIndex)
+    : (scopeMarkerIndex >= 0 ? scope.pathname.slice(0, scopeMarkerIndex) : '/');
+  const appBasePath = (rawAppBasePath || '/').endsWith('/') ? (rawAppBasePath || '/') : `${rawAppBasePath}/`;
+  const trailingSlash = String(path).endsWith('/') && encodedPath ? '/' : '';
+  const projectPath = `${appBasePath}${PROJECT_MARKER.slice(1)}${encodeURIComponent(sessionId)}/${encodedPath}${trailingSlash}`;
+  const target = new URL(projectPath, base.origin);
+  target.search = base.search;
+  return target.href;
 }
 
 function parseProjectUrl(url) {
@@ -69,36 +234,107 @@ function getSession(sessionId) {
 }
 
 function pruneSessions() {
-  const maxAgeMs = 60 * 60 * 1000;
   const now = Date.now();
   for (const [sessionId, session] of sessions) {
-    if (now - session.updatedAt > maxAgeMs) {
+    if (now - session.updatedAt > PROJECT_SESSION_MAX_AGE_MS) {
       sessions.delete(sessionId);
+    }
+  }
+  for (const [clientId, sessionId] of projectClientSessions) {
+    if (!sessions.has(sessionId)) {
+      projectClientSessions.delete(clientId);
     }
   }
 }
 
-function responseForFile(file) {
+function enqueueSessionUpdate(sessionId, update) {
+  const previous = sessionUpdateQueues.get(sessionId) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(update);
+  let tracked;
+  tracked = pending.finally(() => {
+    if (sessionUpdateQueues.get(sessionId) === tracked) {
+      sessionUpdateQueues.delete(sessionId);
+    }
+  });
+  sessionUpdateQueues.set(sessionId, tracked);
+  return tracked;
+}
+
+function createResponseHeaders(file, size) {
+  let contentType = file.mimeType || 'application/octet-stream';
+  if (!file.isBinary && !/;\s*charset=/i.test(contentType) && /^(?:text\/|application\/(?:javascript|json|manifest\+json|xml))/i.test(contentType)) {
+    contentType += ';charset=utf-8';
+  }
+  return new Headers({
+    'Content-Type': contentType,
+    'Content-Length': String(size),
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+    'Accept-Ranges': 'bytes',
+    'X-Content-Type-Options': 'nosniff',
+    'X-HTML-Viewer-Project': '1'
+  });
+}
+
+function parseByteRange(rangeHeader, size) {
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(String(rangeHeader || '').trim());
+  if (!match) return undefined;
+  if (size <= 0) return null;
+
+  let start;
+  let end;
+  if (!match[1]) {
+    const suffixLength = Number.parseInt(match[2], 10);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return null;
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number.parseInt(match[1], 10);
+    end = match[2] ? Number.parseInt(match[2], 10) : size - 1;
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= size || end < start) {
+    return null;
+  }
+  return { start, end: Math.min(end, size - 1) };
+}
+
+function responseForFile(file, request = null, status = 200) {
   if (!file) {
-    return new Response('Not found', {
+    const body = request?.method === 'HEAD' ? null : 'Not found';
+    return new Response(body, {
       status: 404,
       headers: {
         'Content-Type': 'text/plain;charset=utf-8',
+        'Content-Length': '9',
         'Cache-Control': 'no-store'
       }
     });
   }
 
-  const body = file.isBinary ? file.blob : file.content;
-  return new Response(body, {
-    status: 200,
-    headers: {
-      'Content-Type': file.mimeType || 'application/octet-stream',
-      'Cache-Control': 'no-store',
-      'Access-Control-Allow-Origin': '*',
-      'X-HTML-Viewer-Project': '1'
+  const bodyBlob = file.isBinary
+    ? (file.blob || new Blob([]))
+    : new Blob([file.content || ''], { type: file.mimeType || 'text/plain;charset=utf-8' });
+  const headers = createResponseHeaders(file, bodyBlob.size);
+  const isHead = request?.method === 'HEAD';
+  const rangeHeader = status === 200 ? request?.headers?.get('Range') : null;
+
+  if (rangeHeader) {
+    const range = parseByteRange(rangeHeader, bodyBlob.size);
+    if (range === null) {
+      headers.set('Content-Range', `bytes */${bodyBlob.size}`);
+      headers.set('Content-Length', '0');
+      return new Response(null, { status: 416, headers });
     }
-  });
+    if (range) {
+      const partialBody = bodyBlob.slice(range.start, range.end + 1, file.mimeType || undefined);
+      headers.set('Content-Range', `bytes ${range.start}-${range.end}/${bodyBlob.size}`);
+      headers.set('Content-Length', String(partialBody.size));
+      return new Response(isHead ? null : partialBody, { status: 206, headers });
+    }
+  }
+
+  return new Response(isHead ? null : bodyBlob, { status, headers });
 }
 
 function getStoredPath(session, path) {
@@ -185,18 +421,39 @@ function parseRedirectRules(content) {
     .filter(rule => rule.from && rule.to && !/^[a-z][a-z0-9+.-]*:/i.test(rule.to));
 }
 
-function redirectRuleMatches(ruleFrom, path) {
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function matchRedirectRule(ruleFrom, path) {
   const routePath = `/${normalizePath(path)}`;
   const from = ruleFrom.startsWith('/') ? ruleFrom : `/${ruleFrom}`;
-  if (from === routePath) return true;
-  if (from === '/*') return true;
-  if (from.endsWith('/*')) {
-    return routePath.startsWith(from.slice(0, -1));
-  }
-  if (from.endsWith('*')) {
-    return routePath.startsWith(from.slice(0, -1));
-  }
-  return false;
+  const parameterNames = [];
+  let pattern = '';
+  from.split('/').forEach((segment, index) => {
+    if (index > 0) pattern += '/';
+    if (segment === '*') {
+      parameterNames.push('splat');
+      pattern += '(.*)';
+    } else if (segment.startsWith(':') && segment.length > 1) {
+      parameterNames.push(segment.slice(1));
+      pattern += '([^/]+)';
+    } else {
+      pattern += escapeRegex(segment);
+    }
+  });
+  const match = new RegExp(`^${pattern}$`).exec(routePath);
+  if (!match) return null;
+  return Object.fromEntries(parameterNames.map((name, index) => [name, decodePath(match[index + 1] || '')]));
+}
+
+function applyRedirectParams(target, params) {
+  let result = String(target || '');
+  Object.entries(params || {}).forEach(([name, value]) => {
+    result = result.split(`:${name}`).join(value);
+  });
+  if (params?.splat !== undefined) result = result.split('*').join(params.splat);
+  return result;
 }
 
 function resolveRedirectTarget(session, path, preferSiteRoot) {
@@ -204,9 +461,21 @@ function resolveRedirectTarget(session, path, preferSiteRoot) {
   const redirectFile = redirectFilePath ? session.files.get(redirectFilePath) : null;
   if (!redirectFile || redirectFile.isBinary) return null;
 
+  const cleanPath = normalizePath(path);
+  const siteRoot = normalizePath(session.siteRoot || '');
+  const routePaths = [cleanPath];
+  if (siteRoot && cleanPath.toLowerCase().startsWith(`${siteRoot.toLowerCase()}/`)) {
+    routePaths.unshift(cleanPath.slice(siteRoot.length + 1));
+  }
+
   for (const rule of parseRedirectRules(redirectFile.content)) {
-    if (!redirectRuleMatches(rule.from, path)) continue;
-    const targetPath = normalizePath(rule.to);
+    let params = null;
+    for (const routePath of routePaths) {
+      params = matchRedirectRule(rule.from, routePath);
+      if (params) break;
+    }
+    if (!params) continue;
+    const targetPath = normalizePath(applyRedirectParams(rule.to, params));
     const resolvedPath = resolveStaticPath(session, targetPath, { preferSiteRoot });
     if (resolvedPath) return { path: resolvedPath, status: rule.status };
   }
@@ -232,25 +501,56 @@ function resolveProjectRequest(session, path, { preferSiteRoot = false } = {}) {
   return { path: '', file: null, status: 404 };
 }
 
-function responseForResolvedRoute(route) {
-  if (!route.file) return responseForFile(null);
-  const response = responseForFile(route.file);
-  if (route.status === 200) return response;
-  return new Response(response.body, {
-    status: route.status,
-    headers: response.headers
-  });
+function resolveProjectRequestWithSpaFallback(session, path, request, options = {}) {
+  const route = resolveProjectRequest(session, path, options);
+  if (route.file || (request.mode !== 'navigate' && request.destination !== 'document')) return route;
+
+  const cleanPath = normalizePath(path);
+  const lastSegment = cleanPath.split('/').pop() || '';
+  if (!cleanPath || /\.[^/.]+$/.test(lastSegment)) return route;
+
+  const entryPath = resolveStaticPath(session, '', { preferSiteRoot: true });
+  if (!entryPath) return route;
+  return { path: entryPath, file: session.files.get(entryPath), status: 200, spaFallback: true };
+}
+
+function responseForResolvedRoute(route, request, sessionId, baseUrl) {
+  if (!route.file) return responseForFile(null, request);
+  if ([301, 302, 303, 307, 308].includes(route.status)) {
+    return Response.redirect(getProjectUrl(sessionId, route.path, baseUrl), route.status);
+  }
+  // Directory indexes need a trailing slash so native relative fetches,
+  // links and module imports resolve against the directory after reload.
+  const requestUrl = new URL(request.url);
+  if (route.status === 200 && !route.spaFallback && /\/index\.html?$/i.test(route.path) &&
+      (request.mode === 'navigate' || ['document', 'iframe', 'frame'].includes(request.destination)) &&
+      !requestUrl.pathname.endsWith('/') && !/\/index\.html?$/i.test(requestUrl.pathname)) {
+    return Response.redirect(getProjectUrl(sessionId, route.path.replace(/index\.html?$/i, ''), baseUrl), 302);
+  }
+  return responseForFile(route.file, request, route.status);
 }
 
 async function getSessionFromClient(event) {
-  const clientId = event.clientId || event.resultingClientId;
+  const clientId = event.clientId;
   if (!clientId) return null;
+
+  const knownSessionId = projectClientSessions.get(clientId);
+  if (knownSessionId) return knownSessionId;
 
   const client = await self.clients.get(clientId);
   if (!client || !client.url) return null;
 
   const parsed = parseProjectUrl(new URL(client.url));
-  return parsed ? parsed.sessionId : null;
+  if (!parsed) return null;
+  projectClientSessions.set(clientId, parsed.sessionId);
+  return parsed.sessionId;
+}
+
+function rememberProjectClient(event, sessionId) {
+  const clientId = event.resultingClientId || event.clientId;
+  if (clientId && sessionId) {
+    projectClientSessions.set(clientId, sessionId);
+  }
 }
 
 self.addEventListener('message', event => {
@@ -260,44 +560,90 @@ self.addEventListener('message', event => {
     if (replyPort) replyPort.postMessage(payload);
   };
 
+  if (data.type === 'html-viewer:touch-project') {
+    const sessionId = String(data.sessionId || '');
+    if (!sessionId) {
+      reply({ ok: false, error: 'Sesión de preview no válida' });
+      return;
+    }
+
+    const touchSession = enqueueSessionUpdate(sessionId, async () => {
+      const session = await getOrRestoreSession(sessionId);
+      if (!session) {
+        reply({ ok: true, found: false, version: 0 });
+        return;
+      }
+
+      session.updatedAt = Date.now();
+      schedulePersistentSessionWrite(sessionId);
+      reply({ ok: true, found: true, version: session.version, count: session.files.size });
+    });
+    event.waitUntil(touchSession.then(() => sessionPersistenceStates.get(sessionId)?.promise));
+    return;
+  }
+
   if (data.type !== 'html-viewer:set-project') return;
 
-  try {
-    pruneSessions();
-    const session = getSession(data.sessionId);
-
-    if (data.full) {
-      session.files.clear();
-      session.pathIndex.clear();
-    }
-
-    session.siteRoot = normalizePath(data.siteRoot || session.siteRoot || '');
-
-    for (const path of data.removedPaths || []) {
-      const cleanPath = normalizePath(path);
-      session.files.delete(cleanPath);
-      session.pathIndex.delete(cleanPath.toLowerCase());
-    }
-
-    for (const entry of data.entries || []) {
-      const path = normalizePath(entry.path);
-      if (!path) continue;
-      session.files.set(path, {
-        path,
-        mimeType: entry.mimeType || 'application/octet-stream',
-        isBinary: Boolean(entry.isBinary),
-        content: entry.content || '',
-        blob: entry.blob || null
-      });
-      session.pathIndex.set(path.toLowerCase(), path);
-    }
-
-    session.version = data.version || session.version + 1;
-    session.updatedAt = Date.now();
-    reply({ ok: true, version: session.version, count: session.files.size });
-  } catch (err) {
-    reply({ ok: false, error: err && err.message ? err.message : String(err) });
+  const sessionId = String(data.sessionId || '');
+  const incomingVersion = Number(data.version);
+  if (!sessionId || !Number.isFinite(incomingVersion) || incomingVersion <= 0) {
+    reply({ ok: false, error: 'Sesión o versión de preview no válida' });
+    return;
   }
+
+  const updateSession = enqueueSessionUpdate(sessionId, async () => {
+    try {
+      pruneSessions();
+      void prunePersistentSessions().catch(() => {});
+      const restoredSession = await getOrRestoreSession(sessionId);
+      if (!restoredSession && !data.full) {
+        reply({ ok: true, missing: true, version: 0, count: 0 });
+        return;
+      }
+      const session = restoredSession || getSession(sessionId);
+
+      // Messages can outlive the render that created them. Applying a version
+      // twice or applying an older one would resurrect stale files.
+      if (incomingVersion <= session.version) {
+        reply({ ok: true, stale: true, version: session.version, count: session.files.size });
+        return;
+      }
+
+      if (data.full) {
+        session.files.clear();
+        session.pathIndex.clear();
+      }
+
+      session.siteRoot = normalizePath(data.siteRoot || session.siteRoot || '');
+
+      for (const path of data.removedPaths || []) {
+        const cleanPath = normalizePath(path);
+        session.files.delete(cleanPath);
+        session.pathIndex.delete(cleanPath.toLowerCase());
+      }
+
+      for (const entry of data.entries || []) {
+        const path = normalizePath(entry.path);
+        if (!path) continue;
+        session.files.set(path, {
+          path,
+          mimeType: entry.mimeType || 'application/octet-stream',
+          isBinary: Boolean(entry.isBinary),
+          content: entry.content || '',
+          blob: entry.blob || null
+        });
+        session.pathIndex.set(path.toLowerCase(), path);
+      }
+
+      session.version = incomingVersion;
+      session.updatedAt = Date.now();
+      schedulePersistentSessionWrite(sessionId);
+      reply({ ok: true, version: session.version, count: session.files.size });
+    } catch (err) {
+      reply({ ok: false, error: err && err.message ? err.message : String(err) });
+    }
+  });
+  event.waitUntil(updateSession.then(() => sessionPersistenceStates.get(sessionId)?.promise));
 });
 
 self.addEventListener('fetch', event => {
@@ -306,24 +652,35 @@ self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   const parsed = parseProjectUrl(url);
   if (parsed) {
+    rememberProjectClient(event, parsed.sessionId);
     event.respondWith((async () => {
-      const session = sessions.get(parsed.sessionId);
-      if (!session) return responseForFile(null);
+      const session = await getOrRestoreSession(parsed.sessionId);
+      if (!session) return responseForFile(null, event.request);
       const path = parsed.path || 'index.html';
-      return responseForResolvedRoute(resolveProjectRequest(session, path));
+      const route = resolveProjectRequestWithSpaFallback(session, path, event.request);
+      return responseForResolvedRoute(route, event.request, parsed.sessionId, url);
     })());
     return;
   }
+
+  if (!event.clientId) return;
 
   event.respondWith((async () => {
     const sessionId = await getSessionFromClient(event);
     if (!sessionId) return fetch(event.request);
 
-    const session = sessions.get(sessionId);
+    const session = await getOrRestoreSession(sessionId);
     if (!session) return fetch(event.request);
 
+    if (url.origin !== self.location.origin) return fetch(event.request);
+
     const rootRelativePath = normalizePath(decodePath(url.pathname));
-    const route = resolveProjectRequest(session, rootRelativePath, { preferSiteRoot: true });
+    const route = resolveProjectRequestWithSpaFallback(
+      session,
+      rootRelativePath,
+      event.request,
+      { preferSiteRoot: true }
+    );
     if (!route.file) return fetch(event.request);
 
     if (event.request.mode === 'navigate' || event.request.destination === 'document') {
@@ -334,6 +691,6 @@ self.addEventListener('fetch', event => {
       return Response.redirect(getProjectUrl(sessionId, redirectPath, url), 302);
     }
 
-    return responseForResolvedRoute(route);
+    return responseForResolvedRoute(route, event.request, sessionId, url);
   })());
 });

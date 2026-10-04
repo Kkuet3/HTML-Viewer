@@ -1,5 +1,7 @@
 // Mobile Responsive Controls Logic
 function initMobileControls() {
+  if (mobileControlsInitialized) return;
+  mobileControlsInitialized = true;
   const container = document.querySelector('.app-container');
   const sidebar = document.querySelector('.sidebar');
   const overlay = document.getElementById('sidebar-overlay');
@@ -149,10 +151,6 @@ function initMobileControls() {
       } else {
         container.classList.remove('active-tab-editor');
         container.classList.add('active-tab-preview');
-        // Trigger render preview on tab change
-        if (typeof renderPreviewNow === 'function') {
-          renderPreviewNow();
-        }
       }
     });
   });
@@ -209,8 +207,10 @@ function initMobileControls() {
 
 // Initialize State
 function initState() {
+  if (appStateInitialized) return;
+  appStateInitialized = true;
   applyLocale();
-  const savedTheme = localStorage.getItem('theme') || 'dark';
+  const savedTheme = readStoredValue('theme', 'dark');
   document.documentElement.setAttribute('data-theme', savedTheme);
 
   const themeLabel = document.querySelector('#btn-theme span');

@@ -9,7 +9,9 @@ Desktop.ini
 # Local agent/session scratch data
 .agents/
 .codex/
-.claude/settings.local.json
+.claude/
+.vscode/
+.idea/
 
 # Logs and temporary runtime output
 *.log
@@ -20,14 +22,13 @@ tmp-*
 .cache/
 .seo-cache/
 
-# SEO audit output (generated, not served)
-seo-audit-output/
-
-# Dependency/build folders if the app grows a toolchain later
+# Dependencies and generated build output
 node_modules/
 dist/
 build/
 coverage/
+playwright-report/
+test-results/
 
 # Environment files
 .env
